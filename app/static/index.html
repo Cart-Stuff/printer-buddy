@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Printer Monitor</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #16181d; --muted: #6b7280; --border: #e3e5ea;
+    --accent: #2563eb; --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --track: #e5e7eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1115; --card: #181b21; --text: #e8eaee; --muted: #9aa1ad; --border: #2a2f38;
+            --accent: #60a5fa; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --track: #2a2f38; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+           padding: 16px; border-bottom: 1px solid var(--border); background: var(--card); }
+  h1 { font-size: 18px; margin: 0; }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  button { font: inherit; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border);
+           background: var(--card); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .55; cursor: default; }
+  input { font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border);
+          background: var(--bg); color: var(--text); min-width: 0; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .panel h2 { font-size: 15px; margin: 0 0 12px; }
+  .muted { color: var(--muted); }
+  .found { display: grid; gap: 8px; }
+  .found label { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center;
+                 padding: 10px; border: 1px solid var(--border); border-radius: 10px; }
+  .found .key { grid-column: 2 / -1; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .card .cam { aspect-ratio: 16/9; background: #000; display: block; width: 100%; object-fit: cover; }
+  .card .body { padding: 14px; display: grid; gap: 8px; }
+  .card .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .name { font-weight: 600; cursor: text; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+  .s-printing { color: var(--accent); } .s-complete, .s-standby { color: var(--ok); }
+  .s-paused { color: var(--warn); } .s-error, .s-offline, .s-auth_error, .s-shutdown { color: var(--bad); }
+  .bar { height: 8px; background: var(--track); border-radius: 999px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--accent); transition: width .5s; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  .actions { display: flex; justify-content: flex-end; }
+  .actions button { font-size: 13px; padding: 4px 10px; }
+  .empty { text-align: center; padding: 48px 16px; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
+           padding: 8px 14px; border-radius: 8px; display: none; max-width: calc(100% - 32px); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Printer Monitor</h1>
+  <div class="row">
+    <button id="scanBtn" class="primary">Scan network</button>
+    <button id="manualBtn">Add by IP</button>
+  </div>
+</header>
+<main>
+  <section id="manual" class="panel" hidden>
+    <h2>Add a printer by address</h2>
+    <form id="manualForm" class="row">
+      <input name="host" placeholder="192.168.1.50" required style="flex:2 1 160px">
+      <input name="port" placeholder="7125" inputmode="numeric" style="flex:1 1 80px">
+      <input name="api_key" placeholder="API key (if needed)" style="flex:2 1 160px">
+      <button class="primary">Add</button>
+    </form>
+  </section>
+
+  <section id="results" class="panel" hidden>
+    <h2 id="resultsTitle">Printers found</h2>
+    <div id="found" class="found"></div>
+    <div class="row" style="margin-top:12px; justify-content:flex-end">
+      <button id="closeResults">Close</button>
+      <button id="addSelected" class="primary">Add selected</button>
+    </div>
+  </section>
+
+  <div id="grid" class="grid"></div>
+  <div id="empty" class="panel empty" hidden>
+    <p><strong>No printers yet.</strong></p>
+    <p class="muted">Scan your network to find printers running Moonraker, then pick the ones to monitor.</p>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const printers = new Map();
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.style.display = "block";
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.style.display = "none", 4000);
+}
+async function api(path, opts = {}) {
+  const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  const data = r.status === 204 ? null : await r.json().catch(() => null);
+  if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
+  return data;
+}
+const fmtTemp = (t, target) => t == null ? "—" : `${t.toFixed(0)}°` + (target ? ` / ${target.toFixed(0)}°` : "");
+function fmtDur(s) {
+  if (s == null) return "—";
+  s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h ? `${h}h ${m}m` : `${m}m`;
+}
+function statusOf(p) {
+  if (p.connection !== "online") return p.connection === "connecting" ? "connecting" : p.connection;
+  if (p.klippy_state !== "ready") return p.klippy_state || "starting";
+  return p.state || "standby";
+}
+
+// ---- dashboard ---------------------------------------------------------------
+function render() {
+  const grid = $("#grid");
+  $("#empty").hidden = printers.size > 0;
+  for (const el of [...grid.children]) if (!printers.has(+el.dataset.id)) el.remove();
+  for (const p of printers.values()) {
+    let el = grid.querySelector(`[data-id="${p.id}"]`);
+    if (!el) {
+      el = document.createElement("article");
+      el.className = "card"; el.dataset.id = p.id;
+      el.innerHTML = `<img class="cam" alt="" hidden><div class="body">
+        <div class="top"><span class="name" title="Click to rename"></span><span class="pill"></span></div>
+        <div class="file muted"></div><div class="bar"><div></div></div>
+        <div class="stats"></div>
+        <div class="actions"><button data-act="remove">Remove</button></div></div>`;
+      el.querySelector(".name").onclick = () => rename(p.id);
+      el.querySelector("[data-act=remove]").onclick = () => removePrinter(p.id);
+      grid.append(el);
+    }
+    const st = statusOf(p);
+    el.querySelector(".name").textContent = p.name;
+    const pill = el.querySelector(".pill");
+    pill.textContent = st.replace("_", " "); pill.className = `pill s-${st}`;
+    pill.title = p.error || "";
+    el.querySelector(".file").textContent = p.filename || p.message || `${p.host}:${p.port}`;
+    el.querySelector(".bar > div").style.width = `${((p.state === "printing" || p.state === "paused") ? p.progress : 0) * 100}%`;
+    el.querySelector(".stats").innerHTML = `
+      <span class="muted">Nozzle</span><span>${fmtTemp(p.nozzle, p.nozzle_target)}</span>
+      <span class="muted">Bed</span><span>${fmtTemp(p.bed, p.bed_target)}</span>
+      <span class="muted">Progress</span><span>${(p.progress * 100).toFixed(1)}%</span>
+      <span class="muted">Elapsed / left</span><span>${fmtDur(p.print_duration)} / ${fmtDur(p.eta)}</span>`;
+    const cam = el.querySelector(".cam");
+    cam.hidden = !p.has_webcam;
+    if (p.has_webcam && !cam.src) cam.src = `/api/printers/${p.id}/snapshot?t=${Date.now()}`;
+  }
+}
+setInterval(() => {   // refresh webcam snapshots
+  if (document.hidden) return;
+  for (const img of document.querySelectorAll(".card .cam:not([hidden])"))
+    img.src = `/api/printers/${img.closest(".card").dataset.id}/snapshot?t=${Date.now()}`;
+}, 5000);
+
+async function rename(id) {
+  const p = printers.get(id); const name = prompt("Printer name", p.name);
+  if (!name || name === p.name) return;
+  try { printers.set(id, await api(`/api/printers/${id}`, { method: "PATCH", body: JSON.stringify({ name }) })); render(); }
+  catch (e) { toast(e.message); }
+}
+async function removePrinter(id) {
+  if (!confirm(`Stop monitoring ${printers.get(id).name}?`)) return;
+  try { await api(`/api/printers/${id}`, { method: "DELETE" }); printers.delete(id); render(); }
+  catch (e) { toast(e.message); }
+}
+
+// ---- live updates --------------------------------------------------------------
+function connectEvents() {
+  const es = new EventSource("/api/events");
+  es.addEventListener("snapshot", e => { printers.clear(); for (const p of JSON.parse(e.data)) printers.set(p.id, p); render(); });
+  es.addEventListener("printer", e => { const p = JSON.parse(e.data); printers.set(p.id, p); render(); });
+  es.addEventListener("removed", e => { printers.delete(JSON.parse(e.data).id); render(); });
+  es.addEventListener("event", e => { const d = JSON.parse(e.data); toast(`${d.name}: print ${d.event}`); });
+}
+
+// ---- scan → pick ---------------------------------------------------------------
+$("#scanBtn").onclick = async () => {
+  const btn = $("#scanBtn"); btn.disabled = true; btn.textContent = "Scanning…";
+  try { showResults((await api("/api/scan", { method: "POST" })).printers); }
+  catch (e) { toast(e.message); }
+  finally { btn.disabled = false; btn.textContent = "Scan network"; }
+};
+function showResults(list) {
+  $("#results").hidden = false;
+  $("#resultsTitle").textContent = list.length ? `Printers found (${list.length}) — pick the ones to monitor` : "No printers found";
+  $("#found").innerHTML = list.length ? list.map((p, i) => `
+    <label>
+      <input type="checkbox" data-i="${i}" ${p.added_id ? "disabled checked" : ""}>
+      <span><strong>${esc(p.name)}</strong> <span class="muted">${esc(p.host)}:${p.port}</span><br>
+        <span class="muted">${[p.klipper_version && "Klipper " + p.klipper_version, p.moonraker_version && "Moonraker " + p.moonraker_version,
+          p.has_webcam && "webcam", p.klippy_state && p.klippy_state !== "ready" && "klippy " + p.klippy_state].filter(Boolean).map(esc).join(" · ")}</span></span>
+      <span class="muted">${p.added_id ? "already added" : p.needs_auth ? "needs API key" : ""}</span>
+      ${p.needs_auth && !p.added_id ? `<input class="key" data-key="${i}" placeholder="Moonraker API key">` : ""}
+    </label>`).join("")
+    : `<p class="muted">Nothing answered on ports ${"7125/80"}. If Moonraker's [zeroconf] is off or the printer is on another subnet, use “Add by IP”.</p>`;
+  $("#found")._list = list;
+  $("#addSelected").hidden = !list.some(p => !p.added_id);
+}
+$("#closeResults").onclick = () => $("#results").hidden = true;
+$("#addSelected").onclick = async () => {
+  const list = $("#found")._list || [];
+  const picks = [...document.querySelectorAll("#found input[type=checkbox]:checked:not(:disabled)")].map(c => +c.dataset.i);
+  if (!picks.length) return toast("Pick at least one printer");
+  let added = 0;
+  for (const i of picks) {
+    const p = list[i]; const key = document.querySelector(`[data-key="${i}"]`)?.value.trim();
+    try {
+      const v = await api("/api/printers", { method: "POST", body: JSON.stringify({ host: p.host, port: p.port, name: p.name, api_key: key }) });
+      printers.set(v.id, v); p.added_id = v.id; added++;
+    } catch (e) { toast(`${p.name}: ${e.message}`); }
+  }
+  render(); showResults(list);
+  if (added) toast(`Added ${added} printer${added > 1 ? "s" : ""}`);
+};
+
+// ---- manual add -------------------------------------------------------------------
+$("#manualBtn").onclick = () => $("#manual").hidden = !$("#manual").hidden;
+$("#manualForm").onsubmit = async e => {
+  e.preventDefault();
+  const f = Object.fromEntries(new FormData(e.target));
+  try {
+    const v = await api("/api/printers", { method: "POST", body: JSON.stringify({ host: f.host.trim(), port: f.port || 7125, api_key: f.api_key }) });
+    printers.set(v.id, v); render(); e.target.reset(); $("#manual").hidden = true; toast(`Added ${v.name}`);
+  } catch (err) { toast(err.message); }
+};
+
+connectEvents();
+render();
+</script>
+</body>
+</html>

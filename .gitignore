@@ -1,0 +1,6 @@
+__pycache__/
+data/
+*.db
+*.zip
+.venv/
+printer-buddy.env

@@ -98,6 +98,26 @@
   .pg-btns button { min-height: 48px; font-weight: 900; }
   .pg-btns .outline { background: transparent; border: 1.5px solid var(--orange); color: var(--orange); }
   .pg-btns .stop { background: var(--red); color: #fff; }
+  .pg-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+  .pg-tabs button { background: transparent; border-radius: 8px 8px 0 0; color: var(--muted); border-bottom: 3px solid transparent; }
+  .pg-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--orange); }
+  .ctl { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+  .ctl section { border-radius: 12px; background: var(--card); border: 1px solid var(--line); padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+  .ctl h2 { margin: 0; font-size: 17px; font-weight: 900; }
+  .ctl .note { font-size: 14px; color: var(--muted); margin: 0; }
+  .heat { display: grid; grid-template-columns: 70px 1fr auto auto auto; gap: 8px; align-items: center; }
+  .heat .now { font-weight: 900; font-size: 18px; }
+  .heat input { width: 100%; }
+  .heat-label { color: var(--muted); font-size: 14px; }
+  .pre { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .steps { display: flex; gap: 6px; flex-wrap: wrap; }
+  .steps button[aria-pressed="true"] { background: var(--orange); color: #1A1005; }
+  .jog { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .jog button, .homes button, .pre button { font-weight: 900; }
+  .homes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .speed { display: flex; align-items: center; gap: 14px; }
+  .speed input { flex-grow: 1; accent-color: var(--orange); min-height: 44px; border: 0; padding: 0; }
+  .speed output { min-width: 56px; text-align: right; font-weight: 900; font-size: 18px; }
   dialog#qv { width: min(980px, calc(100% - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 14px;
               background: var(--card); color: var(--text); }
   dialog#qv::backdrop { background: rgba(5,5,7,.88); }
@@ -164,7 +184,11 @@
     <a href="#" class="pg-back"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>Your Printers</a>
     <h1 id="pgName"></h1><span class="tag" id="pgTag"></span>
   </div>
-  <div class="pg-body">
+  <div class="pg-tabs" role="tablist">
+    <button role="tab" id="tabStatus" aria-selected="true" aria-controls="pgStatus">Status</button>
+    <button role="tab" id="tabControl" aria-selected="false" aria-controls="pgControl">Control</button>
+  </div>
+  <div class="pg-body" id="pgStatus" role="tabpanel" aria-labelledby="tabStatus">
     <div class="pg-cambox">
       <div class="pg-cam" id="pgCam">
         <img id="pgImg" alt="Webcam" hidden><div class="nocam" id="pgNoCam">No camera</div>
@@ -184,6 +208,46 @@
         <div class="row2"><button class="outline" id="pgCancel">Cancel</button><button class="stop" id="pgStop">E-Stop</button></div>
       </div>
     </aside>
+  </div>
+
+  <div class="ctl" id="pgControl" role="tabpanel" aria-labelledby="tabControl" hidden>
+    <section aria-labelledby="ctlTempH">
+      <h2 id="ctlTempH">Temperatures</h2>
+      <div class="heat">
+        <span class="heat-label">Nozzle</span><span class="now" id="ctlNozzleNow">—</span>
+        <input type="number" id="ctlNozzle" min="0" max="350" inputmode="numeric" aria-label="Nozzle target °C" placeholder="°C">
+        <button id="ctlNozzleSet">Set</button><button id="ctlNozzleOff">Off</button>
+      </div>
+      <div class="heat">
+        <span class="heat-label">Bed</span><span class="now" id="ctlBedNow">—</span>
+        <input type="number" id="ctlBed" min="0" max="150" inputmode="numeric" aria-label="Bed target °C" placeholder="°C">
+        <button id="ctlBedSet">Set</button><button id="ctlBedOff">Off</button>
+      </div>
+      <div class="pre">
+        <button data-pre="210,60">PLA</button><button data-pre="240,80">PETG</button><button data-pre="250,100">ABS</button><button data-pre="0,0">Cool down</button>
+      </div>
+      <p class="note">Preheat: PLA 210°/60°, PETG 240°/80°, ABS 250°/100°.</p>
+    </section>
+
+    <section aria-labelledby="ctlMoveH">
+      <h2 id="ctlMoveH">Move</h2>
+      <div class="homes"><button data-home="">Home all</button><button data-home="X">Home X</button><button data-home="Y">Home Y</button><button data-home="Z">Home Z</button></div>
+      <div class="steps" role="group" aria-label="Step size">
+        <button data-step="0.1" aria-pressed="false">0.1 mm</button><button data-step="1" aria-pressed="false">1 mm</button>
+        <button data-step="10" aria-pressed="true">10 mm</button><button data-step="50" aria-pressed="false">50 mm</button>
+      </div>
+      <div class="jog">
+        <button data-jog="X-">X −</button><button data-jog="X+">X +</button><button data-jog="Y-">Y −</button><button data-jog="Y+">Y +</button>
+        <button data-jog="Z-">Z −</button><button data-jog="Z+">Z +</button>
+      </div>
+      <p class="note" id="ctlMoveNote">Homed: —</p>
+    </section>
+
+    <section aria-labelledby="ctlSpeedH">
+      <h2 id="ctlSpeedH">Speed</h2>
+      <div class="speed"><input type="range" id="ctlSpeed" min="50" max="200" step="5" value="100" aria-label="Print speed percent"><output id="ctlSpeedOut">100%</output></div>
+      <p class="note">Changes the print speed live (M220).</p>
+    </section>
   </div>
 </section>
 
@@ -491,12 +555,65 @@ function renderPage() {
   pause.disabled = !live || !active;
   $("#pgCancel").disabled = !live || !active;
   $("#pgStop").disabled = !live;
+  renderControl(p);
 }
 $("#pgPause").onclick = () => doAction(pageId, printers.get(pageId)?.state === "paused" ? "resume" : "pause");
 $("#pgCancel").onclick = () => doAction(pageId, "cancel");
 $("#pgStop").onclick = () => doAction(pageId, "estop");
 $("#pgFull").onclick = () => $("#pgCam").requestFullscreen?.();
 window.addEventListener("hashchange", route);
+
+// ---- printer page: Control tab -------------------------------------------------
+function showTab(name) {
+  const ctl = name === "control";
+  $("#tabStatus").setAttribute("aria-selected", String(!ctl));
+  $("#tabControl").setAttribute("aria-selected", String(ctl));
+  $("#pgStatus").hidden = ctl; $("#pgControl").hidden = !ctl;
+}
+$("#tabStatus").onclick = () => showTab("status");
+$("#tabControl").onclick = () => showTab("control");
+let jogStep = 10, speedDragging = false;
+async function gcode(script) {
+  const p = printers.get(pageId); if (!p) return;
+  try { await api(`/api/printers/${p.id}/gcode`, { method: "POST", body: JSON.stringify({ script }) }); }
+  catch (e) { toast(`${p.name}: ${e.message}`); }
+}
+const setHeater = (heater, t) => gcode(`SET_HEATER_TEMPERATURE HEATER=${heater} TARGET=${Math.max(0, Math.round(t))}`);
+$("#ctlNozzleSet").onclick = () => { const v = +$("#ctlNozzle").value; if ($("#ctlNozzle").value !== "") setHeater("extruder", v); };
+$("#ctlBedSet").onclick = () => { const v = +$("#ctlBed").value; if ($("#ctlBed").value !== "") setHeater("heater_bed", v); };
+$("#ctlNozzleOff").onclick = () => setHeater("extruder", 0);
+$("#ctlBedOff").onclick = () => setHeater("heater_bed", 0);
+for (const b of document.querySelectorAll("[data-pre]")) b.onclick = () => {
+  const [n, bed] = b.dataset.pre.split(",").map(Number);
+  gcode(`SET_HEATER_TEMPERATURE HEATER=extruder TARGET=${n}\nSET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=${bed}`);
+};
+for (const b of document.querySelectorAll("[data-home]")) b.onclick = () => gcode(`G28 ${b.dataset.home}`.trim());
+for (const b of document.querySelectorAll("[data-step]")) b.onclick = () => {
+  jogStep = +b.dataset.step;
+  for (const o of document.querySelectorAll("[data-step]")) o.setAttribute("aria-pressed", String(o === b));
+};
+for (const b of document.querySelectorAll("[data-jog]")) b.onclick = () => {
+  const axis = b.dataset.jog[0], dir = b.dataset.jog[1] === "-" ? -1 : 1;
+  const feed = axis === "Z" ? 600 : 6000;
+  gcode(`G91\nG1 ${axis}${dir * jogStep} F${feed}\nG90`);
+};
+$("#ctlSpeed").oninput = () => { speedDragging = true; $("#ctlSpeedOut").textContent = `${$("#ctlSpeed").value}%`; };
+$("#ctlSpeed").onchange = () => { speedDragging = false; gcode(`M220 S${$("#ctlSpeed").value}`); };
+function renderControl(p) {
+  const live = p.connection === "online" && p.klippy_state === "ready";
+  const printing = p.state === "printing" || p.state === "paused";
+  $("#ctlNozzleNow").textContent = live ? fmtTemp(p.nozzle) : "—";
+  $("#ctlBedNow").textContent = live ? fmtTemp(p.bed) : "—";
+  for (const el of $("#pgControl").querySelectorAll("button, input")) el.disabled = !live;
+  for (const el of $("#pgControl").querySelectorAll("[data-home], [data-jog], [data-step]")) el.disabled = !live || printing;
+  const homed = (p.homed_axes || "").toUpperCase();
+  $("#ctlMoveNote").textContent = printing ? "Moving is disabled while a print is running."
+    : `Homed: ${homed ? homed.split("").join(", ") : "none"}${homed.length < 3 ? " · home before jogging" : ""}`;
+  if (!speedDragging && p.speed_factor != null) {
+    const v = Math.round(p.speed_factor * 100);
+    $("#ctlSpeed").value = v; $("#ctlSpeedOut").textContent = `${v}%`;
+  }
+}
 setInterval(() => { if (pageId !== null && !document.hidden) refreshPageCam(); }, 2000);
 
 connectEvents();

@@ -20,6 +20,8 @@ SUBSCRIBE = {
     "display_status": ["progress", "message"],
     "virtual_sdcard": ["progress", "is_active"],
     "webhooks": ["state", "state_message"],
+    "gcode_move": ["speed_factor"],
+    "toolhead": ["homed_axes"],
 }
 
 
@@ -217,6 +219,10 @@ class MoonrakerClient:
                    "cancel": "printer.print.cancel", "estop": "printer.emergency_stop"}
         return await self._call(methods[action], timeout=15)
 
+    async def gcode(self, script: str):
+        """Run G-code; waits until Klipper finishes it (homing can take a while)."""
+        return await self._call("printer.gcode.script", {"script": script}, timeout=120)
+
     # state ------------------------------------------------------------------
     def _set(self, **kw):
         for k, v in kw.items():
@@ -266,4 +272,6 @@ class MoonrakerClient:
             "bed": s.get("heater_bed", {}).get("temperature"),
             "bed_target": s.get("heater_bed", {}).get("target"),
             "has_webcam": self.snapshot_url() is not None,
+            "speed_factor": s.get("gcode_move", {}).get("speed_factor"),
+            "homed_axes": s.get("toolhead", {}).get("homed_axes"),
         }

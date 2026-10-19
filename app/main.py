@@ -156,6 +156,23 @@ async def printer_action(request: Request):
     return JSONResponse({"ok": True})
 
 
+async def printer_gcode(request: Request):
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    script = str((await body(request)).get("script", "")).strip()
+    if not script:
+        return err("script is required")
+    client = manager.clients[pid]
+    if client.connection != "online":
+        return err("printer is offline", 409)
+    try:
+        await client.gcode(script)
+    except Exception as e:
+        return err(str(e) or type(e).__name__, 502)
+    return JSONResponse({"ok": True})
+
+
 # ---- live updates (Server-Sent Events) -----------------------------------------
 async def events(request: Request):
     q = manager.subscribe()
@@ -204,6 +221,7 @@ app = Starlette(routes=[
     Route("/api/printers/{pid:int}", update_printer, methods=["PATCH"]),
     Route("/api/printers/{pid:int}", delete_printer, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/snapshot", snapshot),
+    Route("/api/printers/{pid:int}/gcode", printer_gcode, methods=["POST"]),
     Route("/api/printers/{pid:int}/{action}", printer_action, methods=["POST"]),
     Route("/api/events", events),
     Route("/api/notify/test", test_notification, methods=["POST"]),

@@ -284,27 +284,30 @@ class MoonrakerClient:
         except Exception:
             log.exception("on_change handler failed")
 
-    def snapshot_url(self) -> str | None:
-        for cam in self.webcams:
-            url = cam.get("snapshot_url")
-            if url:
-                if url.startswith(("http://", "https://")):
-                    return url
-                # relative URLs are served by the web frontend (Mainsail/Fluidd nginx), not Moonraker's port
-                return f"http://{self.host}{url if url.startswith('/') else '/' + url}"
-        return None
+    def _snap_cams(self) -> list[dict]:
+        return [cam for cam in self.webcams if cam.get("snapshot_url")]
 
-    def cam_info(self) -> dict | None:
-        """Flip / rotation / fps as configured for this camera in Moonraker."""
-        for cam in self.webcams:
-            if cam.get("snapshot_url"):
-                try:
-                    rotation = int(cam.get("rotation") or 0)
-                except (TypeError, ValueError):
-                    rotation = 0
-                return {"flip_h": bool(cam.get("flip_horizontal")), "flip_v": bool(cam.get("flip_vertical")),
-                        "rotation": rotation, "target_fps": cam.get("target_fps")}
-        return None
+    def snapshot_url(self, index: int = 0) -> str | None:
+        cams = self._snap_cams()
+        if not cams:
+            return None
+        url = cams[min(max(index, 0), len(cams) - 1)]["snapshot_url"]
+        if url.startswith(("http://", "https://")):
+            return url
+        # relative URLs are served by the web frontend (Mainsail/Fluidd nginx), not Moonraker's port
+        return f"http://{self.host}{url if url.startswith('/') else '/' + url}"
+
+    def cams_info(self) -> list[dict]:
+        """Name / flip / rotation / fps of each camera, as configured in Moonraker."""
+        out = []
+        for i, cam in enumerate(self._snap_cams()):
+            try:
+                rotation = int(cam.get("rotation") or 0)
+            except (TypeError, ValueError):
+                rotation = 0
+            out.append({"name": cam.get("name") or f"Camera {i + 1}", "flip_h": bool(cam.get("flip_horizontal")),
+                        "flip_v": bool(cam.get("flip_vertical")), "rotation": rotation, "target_fps": cam.get("target_fps")})
+        return out
 
     def view(self) -> dict:
         s = self.status
@@ -333,7 +336,7 @@ class MoonrakerClient:
             "bed": s.get("heater_bed", {}).get("temperature"),
             "bed_target": s.get("heater_bed", {}).get("target"),
             "has_webcam": self.snapshot_url() is not None,
-            "cam": self.cam_info(),
+            "cams": self.cams_info(),
             "speed_factor": s.get("gcode_move", {}).get("speed_factor"),
             "homed_axes": s.get("toolhead", {}).get("homed_axes"),
         }

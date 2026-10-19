@@ -114,15 +114,25 @@ async def update_printer(request: Request):
         c = b.get("camera")
         if c is None:
             cam = None
-        elif isinstance(c, dict):
+        elif isinstance(c, dict) and isinstance(c.get("cams") or {}, dict):
+            cams = {}
+            for k, v in (c.get("cams") or {}).items():
+                if not str(k).isdigit() or not isinstance(v, dict):
+                    return err("bad camera settings")
+                try:
+                    rotation = int(v.get("rotation") or 0)
+                except (TypeError, ValueError):
+                    return err("bad camera settings")
+                refresh = v.get("refresh")
+                if rotation not in (0, 90, 180, 270) or refresh not in (None, 1, 2, 5, 10):
+                    return err("bad camera settings")
+                cams[str(int(k))] = {"flip_h": bool(v.get("flip_h")), "flip_v": bool(v.get("flip_v")),
+                                     "rotation": rotation, "refresh": refresh}
             try:
-                rotation = int(c.get("rotation") or 0)
+                main_cam = max(0, int(c.get("main") or 0))
             except (TypeError, ValueError):
                 return err("bad camera settings")
-            refresh = c.get("refresh")
-            if rotation not in (0, 90, 180, 270) or refresh not in (None, 1, 2, 5, 10):
-                return err("bad camera settings")
-            cam = {"flip_h": bool(c.get("flip_h")), "flip_v": bool(c.get("flip_v")), "rotation": rotation, "refresh": refresh}
+            cam = {"main": main_cam, "cams": cams}
         else:
             return err("bad camera settings")
         manager.set_camera(pid, cam)
@@ -156,7 +166,11 @@ async def snapshot(request: Request):
     pid = _pid(request)
     if pid is None:
         return err("not found", 404)
-    url = manager.clients[pid].snapshot_url()
+    try:
+        cam = int(request.query_params.get("cam", 0))
+    except ValueError:
+        return err("bad camera number")
+    url = manager.clients[pid].snapshot_url(cam)
     if not url or not url.startswith("http://"):
         return err("no webcam", 404)
     try:

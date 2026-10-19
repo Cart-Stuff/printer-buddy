@@ -59,6 +59,15 @@ class Manager:
         self.rows[pid]["grp"] = group
         self._broadcast("printer", self.view(pid))
 
+    @staticmethod
+    def _cam_settings(row: dict) -> dict | None:
+        if not row.get("cam"):
+            return None
+        cfg = json.loads(row["cam"])
+        if "cams" not in cfg:  # settings saved before multi-camera: they were for camera 0
+            cfg = {"main": 0, "cams": {"0": cfg}}
+        return cfg
+
     def set_camera(self, pid: int, cfg: dict | None):
         value = json.dumps(cfg) if cfg else None
         self.store.update(pid, cam=value)
@@ -87,7 +96,7 @@ class Manager:
         return {
             "id": pid, "name": row["name"], "host": row["host"], "port": row["port"],
             "has_api_key": bool(row["api_key"]), "group": row.get("grp"), "position": row.get("position"),
-            "cam_settings": json.loads(row["cam"]) if row.get("cam") else None,
+            "cam_settings": self._cam_settings(row),
             **self.clients[pid].view(),
         }
 

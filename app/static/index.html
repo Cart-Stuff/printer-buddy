@@ -83,6 +83,18 @@
   .nset .checks input { min-height: 0; width: 18px; height: 18px; accent-color: var(--orange); }
   body.notify-basic .nadv { display: none !important; }
   body.no-timelapse .vtl { display: none !important; }
+  body.no-remote .rmt { display: none !important; }
+  dialog#shareDlg { width: min(560px, calc(100% - 32px)); padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--text); }
+  dialog#shareDlg::backdrop { background: rgba(5,5,7,.8); }
+  #shareDlg h2 { margin: 0 0 6px; font-size: 18px; }
+  #shareDlg .sub { margin: 0 0 14px; font-size: 14px; color: var(--muted); }
+  #shareDlg select { font: inherit; min-height: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card2); color: var(--text); }
+  .share-new { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .share-list { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+  .share-item { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 10px; }
+  .share-item input { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  .share-item .exp { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+  .share-item .revoke { background: transparent; color: var(--red-text); }
   .tl { display: flex; flex-direction: column; gap: 14px; }
   .tl-set { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
   .tl-set label { display: flex; align-items: center; gap: 8px; font-weight: 700; }
@@ -501,6 +513,17 @@
   </div>
 </section>
 
+<dialog id="shareDlg" aria-labelledby="shareTitle">
+  <h2 id="shareTitle">Share</h2>
+  <p class="sub">Anyone with the link can watch this printer's camera and progress. They can't control it.</p>
+  <div class="share-new">
+    <label>Link works for <select id="shareExp"><option value="1h">1 hour</option><option value="1d" selected>1 day</option><option value="7d">7 days</option><option value="never">until I turn it off</option></select></label>
+    <button class="primary" id="shareCreate">Create link</button>
+  </div>
+  <div class="share-list" id="shareList"></div>
+  <div class="row" style="justify-content:flex-end; margin-top:14px"><button id="shareClose">Close</button></div>
+</dialog>
+
 <dialog id="camDlg" aria-labelledby="camDlgTitle">
   <h2 id="camDlgTitle">Camera settings</h2>
   <form id="camForm">
@@ -602,7 +625,7 @@ function render() {
         <dl class="stats"><div><dt>Time left</dt><dd data-f="left"></dd></div>
           <div><dt>Nozzle</dt><dd data-f="nozzle"></dd></div><div><dt>Bed</dt><dd data-f="bed"></dd></div></dl>
         <div class="actions"><button class="primary" data-act="open">Open</button><button class="outline" data-act="qv">Quick View</button></div>
-        <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="group" class="adv">Set group</button><button data-act="camera">Camera settings</button><button data-act="notify" class="nadv">Notifications: on</button><button data-act="remove" class="danger">Remove</button></div>`;
+        <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="group" class="adv">Set group</button><button data-act="camera">Camera settings</button><button data-act="notify" class="nadv">Notifications: on</button><button data-act="share" class="rmt">Share</button><button data-act="remove" class="danger">Remove</button></div>`;
       const menu = el.querySelector(".menu"), mbtn = el.querySelector(".iconbtn");
       mbtn.onclick = () => { menu.hidden = !menu.hidden; mbtn.setAttribute("aria-expanded", String(!menu.hidden)); };
       el.querySelector("[data-act=rename]").onclick = () => { menu.hidden = true; rename(p.id); };
@@ -610,6 +633,7 @@ function render() {
       el.querySelector("[data-act=group]").onclick = () => { menu.hidden = true; setGroup(p.id); };
       el.querySelector("[data-act=camera]").onclick = () => { menu.hidden = true; openCamDlg(p.id); };
       el.querySelector("[data-act=notify]").onclick = () => { menu.hidden = true; toggleNotify(p.id); };
+      el.querySelector("[data-act=share]").onclick = () => { menu.hidden = true; openShare(p.id); };
       el.addEventListener("dragstart", e => { dragId = p.id; el.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(p.id)); });
       el.addEventListener("dragend", () => { dragId = null; el.classList.remove("dragging"); clearDrop(); });
       el.addEventListener("dragover", e => { if (dragId === null || dragId === p.id) return; e.preventDefault(); clearDrop(); el.classList.add("drop-before"); });
@@ -1394,6 +1418,42 @@ $("#notifyTest").onclick = async () => {
   } catch (e) { toast(e.message); } finally { btn.disabled = false; }
 };
 
+// ---- share links (Remote access on) ---------------------------------------------------
+let shareId = null;
+async function openShare(id) {
+  const p = printers.get(id); if (!p) return;
+  shareId = id; $("#shareTitle").textContent = `Share ${p.name}`;
+  await loadShares(); $("#shareDlg").showModal();
+}
+async function loadShares() {
+  try {
+    const { shares } = await api(`/api/printers/${shareId}/shares`);
+    $("#shareList").innerHTML = shares.length ? shares.map((sh, i) => `<div class="share-item">
+        <input readonly value="${esc(sh.url)}" aria-label="Share link">
+        <button data-copy="${i}">Copy</button><button class="revoke" data-revoke="${i}">Turn off</button>
+        <span class="exp">${sh.expires_at ? `Works until ${new Date(sh.expires_at * 1000).toLocaleString()}` : "Works until you turn it off"}</span>
+      </div>`).join("") : `<p class="muted" style="margin:0">No active links for this printer.</p>`;
+    for (const b of $("#shareList").querySelectorAll("[data-copy]")) b.onclick = () => copyText(shares[+b.dataset.copy].url, b);
+    for (const b of $("#shareList").querySelectorAll("[data-revoke]")) b.onclick = async () => {
+      if (!confirm("Turn off this link? Anyone using it loses access right away.")) return;
+      try { await api(`/api/shares/${encodeURIComponent(shares[+b.dataset.revoke].code)}`, { method: "DELETE" }); loadShares(); } catch (e) { toast(e.message); }
+    };
+  } catch (e) { toast(e.message); }
+}
+async function copyText(text, btn) {
+  try { await navigator.clipboard.writeText(text); }
+  catch { const i = btn.parentElement.querySelector("input"); i.select(); document.execCommand?.("copy"); }
+  btn.textContent = "Copied"; setTimeout(() => btn.textContent = "Copy", 1500);
+}
+$("#shareCreate").onclick = async () => {
+  try {
+    const sh = await api(`/api/printers/${shareId}/shares`, { method: "POST", body: JSON.stringify({ expires: $("#shareExp").value }) });
+    await loadShares();
+    try { await navigator.clipboard.writeText(sh.url); toast("Link created and copied"); } catch { toast("Link created"); }
+  } catch (e) { toast(e.message); }
+};
+$("#shareClose").onclick = () => $("#shareDlg").close();
+
 // ---- setup from install.sh ----------------------------------------------------------
 let SETUP = { ui: "basic" };
 const isBasic = () => SETUP.ui !== "advanced";
@@ -1405,6 +1465,7 @@ async function loadConfig() {
     document.body.classList.toggle("ui-basic", isBasic());
     document.body.classList.toggle("notify-basic", SETUP.notify !== "advanced");
     document.body.classList.toggle("no-timelapse", SETUP.video !== "timelapse");
+    document.body.classList.toggle("no-remote", SETUP.remote !== "on");
     if (isBasic()) {
       $("#grid").classList.remove("list");
       if ($("#sortBy").value === "custom") { $("#sortBy").value = "status"; arrange(); }
@@ -1415,7 +1476,7 @@ async function loadConfig() {
       + " — run ./install.sh to change";
   } catch {}
 }
-document.body.classList.add("ui-basic", "notify-basic", "no-timelapse");
+document.body.classList.add("ui-basic", "notify-basic", "no-timelapse", "no-remote");
 loadConfig();
 
 connectEvents();

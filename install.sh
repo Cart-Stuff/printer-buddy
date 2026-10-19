@@ -224,6 +224,92 @@ restore_backup() {
   echo "Restored ${list[$((n - 1))]}."
 }
 
+# ---------------------------------------------------------------- remote access (Cloudflare tunnel)
+share_domain() { local d; d="$(get_env PB_SHARE_DOMAIN)"; echo "${d:-printerbuddy.stream}"; }
+tunnel_state() {
+  if ! systemctl list-unit-files cloudflared.service >/dev/null 2>&1 || ! systemctl cat cloudflared >/dev/null 2>&1; then echo "not set up"
+  elif systemctl is-active --quiet cloudflared; then echo "running"
+  else echo "stopped"; fi
+}
+user_id() {   # this box's Printer Buddy ID: the user/<id> part of share links and the tunnel's name
+  local uid; uid="$(get_env PB_USER_ID)"
+  if [ -z "$uid" ]; then
+    local port; port="$(get_env PORT)"
+    uid="$(curl -fsS --max-time 2 "http://127.0.0.1:${port:-8080}/api/share/user-id" 2>/dev/null | sed -n 's/.*"user_id": *"\([0-9]*\)".*/\1/p')"
+    [ -n "$uid" ] || uid="$(( (RANDOM * 32768 + RANDOM) % 9000000 + 1000000 ))"
+    set_env PB_USER_ID "$uid"
+  fi
+  echo "$uid"
+}
+install_cloudflared() {
+  command -v cloudflared >/dev/null && return 0
+  echo "Installing cloudflared (Cloudflare's tunnel program)..."
+  local arch tmp; arch="$(dpkg --print-architecture 2>/dev/null)"
+  case "$arch" in amd64|arm64|armhf|i386) ;; *) echo "Unsupported CPU type: ${arch:-unknown}"; return 1 ;; esac
+  tmp="$(mktemp --suffix=.deb)"
+  curl -fsSL -o "$tmp" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}.deb" \
+    && sudo dpkg -i "$tmp" >/dev/null || { rm -f "$tmp"; echo "Couldn't install cloudflared."; return 1; }
+  rm -f "$tmp"
+}
+tunnel_instructions() {
+  local uid port; uid="$(user_id)"; port="$(get_env PORT)"
+  echo
+  echo "Send this to the Printer Buddy admin (it's not secret):"
+  echo "  Printer Buddy ID: $uid"
+  echo
+  echo "Admin: in Cloudflare Zero Trust > Networks > Tunnels, create a tunnel for this box and add a public hostname:"
+  echo "  Subdomain: u$uid    Domain: $(share_domain)    Path: ^/share/"
+  echo "  Service:   HTTP  localhost:${port:-8080}"
+  echo "Then send back the tunnel token (the long string after --token)."
+}
+set_tunnel_token() {
+  install_cloudflared || return 1
+  tunnel_instructions
+  echo
+  local token; read -r -s -p "Paste the tunnel token (hidden, Enter to cancel): " token </dev/tty || token=""; echo
+  [ -n "$token" ] || { echo "Nothing changed."; return 0; }
+  if [ "$(tunnel_state)" != "not set up" ]; then sudo cloudflared service uninstall >/dev/null 2>&1; fi
+  if sudo cloudflared service install "$token" >/dev/null 2>&1; then
+    sleep 3
+    if systemctl is-active --quiet cloudflared; then echo "Tunnel is running."
+    else echo "The tunnel was set up but isn't running yet. Check the token, or see: journalctl -u cloudflared -n 30"; fi
+  else
+    echo "cloudflared didn't accept that token. Nothing else was changed."; return 1
+  fi
+  if [ "$(part_value "${PARTS[4]}")" != "on" ]; then
+    yesno "Remote access is off in your setup, so share links won't work. Turn it on now?" && { set_env PB_REMOTE on; installed && hard_restart; }
+  fi
+}
+remove_tunnel() {
+  [ "$(tunnel_state)" = "not set up" ] && { echo "No tunnel is set up."; return 0; }
+  yesno "Remove the tunnel? Share links will stop working from outside." || { echo "Nothing changed."; return 0; }
+  sudo cloudflared service uninstall >/dev/null 2>&1 && echo "Tunnel removed."
+}
+remote_menu() {
+  local c
+  while true; do
+    clear 2>/dev/null || true
+    top; center "REMOTE ACCESS / SHARE LINKS"; hr
+    row "Remote access:  $(part_value "${PARTS[4]}")"
+    row "Tunnel:         $(tunnel_state)"
+    row "Your ID:        $(user_id)"
+    row "Links look like:"
+    row "  https://www.$(share_domain)/share/user/$(user_id)/..."
+    hr
+    row "1) Set up / replace tunnel token"
+    row "2) Show what to send the admin"
+    row "3) Remove tunnel"
+    row ""; row "B) Back"; bottom
+    c="$(ask "Perform action: ")"
+    case "$c" in
+      1) set_tunnel_token; pause ;;
+      2) tunnel_instructions; pause ;;
+      3) remove_tunnel; pause ;;
+      b|back|"") return ;;
+    esac
+  done
+}
+
 # ---------------------------------------------------------------- menus
 setup_lines() {
   local part key var name choices v note
@@ -250,6 +336,7 @@ main_menu() {
     row "$(printf '%-28s%s' '2) Change setup' '6) Show logs')"
     row "$(printf '%-28s%s' '3) Update' '7) Remove')"
     row "$(printf '%-28s%s' '4) Backup / restore data' '8) GitHub login')"
+    row "9) Remote access / share links"
     row ""; row "Q) Quit"; bottom
     c="$(ask "Perform action: ")"
     case "$c" in
@@ -261,6 +348,7 @@ main_menu() {
       6) show_logs; pause ;;
       7) do_remove; pause ;;
       8) github_login; pause ;;
+      9) remote_menu ;;
       q|quit|exit) echo "Bye."; exit 0 ;;
       *) ;;
     esac

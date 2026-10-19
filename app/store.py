@@ -16,6 +16,13 @@ CREATE TABLE IF NOT EXISTS printers (
     created_at REAL NOT NULL,
     UNIQUE(host, port)
 );
+CREATE TABLE IF NOT EXISTS shares (
+    code       TEXT PRIMARY KEY,
+    printer_id INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    expires_at REAL,
+    revoked    INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -78,6 +85,28 @@ class Store:
             self.db.executemany("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
                                 [(k, json.dumps(v)) for k, v in values.items()])
 
+    # share links ---------------------------------------------------------
+    def add_share(self, code: str, pid: int, expires_at: float | None) -> dict:
+        with self.db:
+            self.db.execute("INSERT INTO shares(code, printer_id, created_at, expires_at) VALUES (?,?,?,?)",
+                            (code, pid, time.time(), expires_at))
+        return self.get_share(code)
+
+    def get_share(self, code: str) -> dict | None:
+        r = self.db.execute("SELECT * FROM shares WHERE code=?", (code,)).fetchone()
+        return dict(r) if r else None
+
+    def list_shares(self, pid: int) -> list[dict]:
+        now = time.time()
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM shares WHERE printer_id=? AND revoked=0 AND (expires_at IS NULL OR expires_at > ?) "
+            "ORDER BY created_at DESC", (pid, now))]
+
+    def revoke_share(self, code: str) -> bool:
+        with self.db:
+            return self.db.execute("UPDATE shares SET revoked=1 WHERE code=? AND revoked=0", (code,)).rowcount > 0
+
     def delete(self, pid: int):
         with self.db:
+            self.db.execute("DELETE FROM shares WHERE printer_id=?", (pid,))
             self.db.execute("DELETE FROM printers WHERE id=?", (pid,))

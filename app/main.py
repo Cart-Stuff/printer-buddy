@@ -6,12 +6,13 @@ import contextlib
 import json
 import logging
 import os
+import secrets
 import time
 from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from . import discovery
@@ -261,6 +262,118 @@ async def delete_timelapse(request: Request):
     if pid is None or not manager.timelapse.delete(pid, request.path_params["tid"]):
         return err("not found", 404)
     return Response(status_code=204)
+
+
+# ---- share links ---------------------------------------------------------------------
+SHARE_EXPIRY = {"1h": 3600, "1d": 86400, "7d": 7 * 86400, "never": None}
+
+
+def remote_on() -> bool:
+    return setup()["remote"] == "on"
+
+
+def share_user_id() -> str:
+    """Random number for this box, made once; it's the user/<id> part of share links.
+    install.sh keeps it in printer-buddy.env (PB_USER_ID) so the tunnel can be named after it."""
+    env_uid = os.getenv("PB_USER_ID", "").strip()
+    if env_uid.isdigit():
+        return env_uid
+    uid = store.settings().get("share_user_id")
+    if not uid:
+        uid = str(secrets.randbelow(9_000_000) + 1_000_000)
+        store.save_settings({"share_user_id": uid})
+    return uid
+
+
+def share_url(request: Request, pid: int, code: str) -> str:
+    domain = os.getenv("PB_SHARE_DOMAIN", "").strip().strip("/")
+    if domain:
+        host = domain if domain.startswith("www.") else f"www.{domain}"
+        return f"https://{host}/share/user/{share_user_id()}/printer/{pid}/{code}"
+    return f"{str(request.base_url).rstrip('/')}/share/printer/{pid}/{code}"   # no domain set: works on your network only
+
+
+def share_view(request: Request, row: dict) -> dict:
+    return {"code": row["code"], "url": share_url(request, row["printer_id"], row["code"]),
+            "created_at": row["created_at"], "expires_at": row["expires_at"]}
+
+
+async def share_user(request: Request):
+    return JSONResponse({"user_id": share_user_id()})
+
+
+async def create_share(request: Request):
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    if not remote_on():
+        return err("share links need Remote access on (installer: Change setup)", 403)
+    expiry = (await body(request)).get("expires", "1d")
+    if expiry not in SHARE_EXPIRY:
+        return err("bad expiry")
+    seconds = SHARE_EXPIRY[expiry]
+    row = store.add_share(secrets.token_urlsafe(32), pid, time.time() + seconds if seconds else None)
+    return JSONResponse(share_view(request, row), status_code=201)
+
+
+async def list_shares(request: Request):
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    return JSONResponse({"shares": [share_view(request, r) for r in store.list_shares(pid)], "remote": remote_on()})
+
+
+async def revoke_share(request: Request):
+    if not store.revoke_share(request.path_params["code"]):
+        return err("not found", 404)
+    return Response(status_code=204)
+
+
+def _valid_share(request: Request):
+    """The printer id for a share link, or None if the link is wrong, revoked, expired or sharing is off."""
+    if not remote_on():
+        return None
+    row = store.get_share(request.path_params["code"])
+    pid = request.path_params["pid"]
+    if (not row or row["revoked"] or row["printer_id"] != pid or pid not in manager.clients
+            or (row["expires_at"] and row["expires_at"] < time.time())):
+        return None
+    return pid
+
+
+SHARE_GONE = "This share link has expired or was turned off."
+
+
+async def share_page(request: Request):
+    return FileResponse(STATIC / "share.html", headers={"Cache-Control": "no-cache", "X-Robots-Tag": "noindex"})
+
+
+async def share_status(request: Request):
+    pid = _valid_share(request)
+    if pid is None:
+        return err(SHARE_GONE, 404)
+    v = manager.view(pid)
+    keep = ("name", "connection", "klippy_state", "state", "filename", "progress", "print_duration", "eta",
+            "nozzle", "nozzle_target", "bed", "bed_target", "has_webcam", "layer", "total_layers")
+    out = {k: v.get(k) for k in keep}
+    out["cams"] = [{"name": c["name"], "live": c["live"]} for c in (v.get("cams") or [])]
+    out["main_cam"] = (v.get("cam_settings") or {}).get("main", 0)
+    out["video_live"] = setup()["video"] in ("live", "timelapse")
+    row = store.get_share(request.path_params["code"])
+    out["expires_at"] = row["expires_at"] if row else None
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+async def share_snapshot(request: Request):
+    if _valid_share(request) is None:
+        return err(SHARE_GONE, 404)
+    return await snapshot(request)
+
+
+async def share_stream(request: Request):
+    if _valid_share(request) is None:
+        return err(SHARE_GONE, 404)
+    return await live_stream(request)
 
 
 async def printer_action(request: Request):
@@ -514,7 +627,23 @@ async def lifespan(app):
     await manager.stop()
 
 
-app = Starlette(routes=[
+class TunnelGuard:
+    """Requests that come in through the Cloudflare tunnel may only reach the /share/... pages.
+    (The tunnel is also set to /share/ only; this is a second lock in case that's misconfigured.)"""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            names = {k.lower() for k, _ in scope.get("headers", [])}
+            if (b"cf-ray" in names or b"cf-connecting-ip" in names) and not scope["path"].startswith("/share/"):
+                await PlainTextResponse("Not found", status_code=404)(scope, receive, send)
+                return
+        await self.inner(scope, receive, send)
+
+
+_app = Starlette(routes=[
     Route("/", index),
     Route("/healthz", health),
     Route("/api/config", get_config),
@@ -527,6 +656,15 @@ app = Starlette(routes=[
     Route("/api/printers/{pid:int}", delete_printer, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/snapshot", snapshot),
     Route("/api/printers/{pid:int}/stream", live_stream),
+    Route("/api/printers/{pid:int}/shares", list_shares),
+    Route("/api/printers/{pid:int}/shares", create_share, methods=["POST"]),
+    Route("/api/shares/{code}", revoke_share, methods=["DELETE"]),
+    Route("/api/share/user-id", share_user),
+    # public share pages: the only paths the tunnel will let in from outside
+    Route("/share/printer/{pid:int}/{code}", share_page),
+    Route("/share/printer/{pid:int}/{code}/status", share_status),
+    Route("/share/printer/{pid:int}/{code}/snapshot", share_snapshot),
+    Route("/share/printer/{pid:int}/{code}/stream", share_stream),
     Route("/api/timelapse/settings", timelapse_settings, methods=["GET", "PUT"]),
     Route("/api/printers/{pid:int}/timelapses", list_timelapses),
     Route("/api/printers/{pid:int}/timelapses/{tid}.mp4", timelapse_video),
@@ -544,3 +682,4 @@ app = Starlette(routes=[
     Route("/api/notify/settings", save_notify_settings, methods=["PUT"]),
     Route("/api/notify/test", test_notification, methods=["POST"]),
 ], lifespan=lifespan)
+app = TunnelGuard(_app)

@@ -69,8 +69,35 @@
   .empty { text-align: center; padding: 48px 16px; }
   #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
            padding: 10px 16px; border-radius: 8px; font-weight: 700; display: none; max-width: calc(100% - 32px); }
-  .actions { padding: 0 14px 14px; margin-top: auto; }
-  .actions button { width: 100%; background: transparent; border: 1.5px solid var(--orange); color: var(--orange); font-weight: 900; }
+  .actions { padding: 0 14px 14px; margin-top: auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .actions button { font-weight: 900; }
+  .actions button.outline { background: transparent; border: 1.5px solid var(--orange); color: var(--orange); }
+  #page { max-width: 1500px; margin: 0 auto; padding: 20px 24px 40px; display: flex; flex-direction: column; gap: 18px; }
+  .pg-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+  .pg-back { display: flex; align-items: center; gap: 6px; min-height: 44px; padding-right: 8px; color: var(--muted); font-weight: 700; text-decoration: none; }
+  .pg-head h1 { font-size: 26px; }
+  .pg-head .tag { position: static; }
+  .pg-body { display: flex; flex-wrap: wrap; gap: 18px; align-items: stretch; }
+  .pg-cambox { flex: 999 1 640px; min-width: 0; border-radius: 12px; overflow: hidden; background: var(--card); border: 1px solid var(--line); }
+  .pg-cam { position: relative; aspect-ratio: 16 / 9; background: #000; }
+  .pg-cam img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .pg-full { position: absolute; right: 12px; top: 12px; width: 44px; padding: 0; display: flex; align-items: center; justify-content: center; background: rgba(11,11,13,.82); }
+  .pg-side { flex: 1 1 340px; border-radius: 12px; background: var(--card); border: 1px solid var(--line); padding: 22px; display: flex; flex-direction: column; gap: 20px; }
+  .pg-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .pg-file { font-weight: 700; overflow-wrap: anywhere; }
+  .pg-big { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .pg-pct { font-size: 64px; font-weight: 900; line-height: .9; }
+  .pg-pct small { font-size: 28px; }
+  .pg-times { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size: 15px; }
+  .pg-stats { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .pg-stats div { padding: 12px 14px; border-radius: 8px; background: var(--card2); display: flex; flex-direction: column; gap: 2px; }
+  .pg-stats dt { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .pg-stats dd { margin: 0; font-size: 22px; font-weight: 900; }
+  .pg-btns { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
+  .pg-btns .row2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .pg-btns button { min-height: 48px; font-weight: 900; }
+  .pg-btns .outline { background: transparent; border: 1.5px solid var(--orange); color: var(--orange); }
+  .pg-btns .stop { background: var(--red); color: #fff; }
   dialog#qv { width: min(980px, calc(100% - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 14px;
               background: var(--card); color: var(--text); }
   dialog#qv::backdrop { background: rgba(5,5,7,.88); }
@@ -131,6 +158,34 @@
     <p class="muted">Scan your network to find printers running Moonraker, then pick the ones to monitor.</p>
   </div>
 </main>
+
+<section id="page" hidden>
+  <div class="pg-head">
+    <a href="#" class="pg-back"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>Your Printers</a>
+    <h1 id="pgName"></h1><span class="tag" id="pgTag"></span>
+  </div>
+  <div class="pg-body">
+    <div class="pg-cambox">
+      <div class="pg-cam" id="pgCam">
+        <img id="pgImg" alt="Webcam" hidden><div class="nocam" id="pgNoCam">No camera</div>
+        <button class="pg-full" id="pgFull" aria-label="Full screen"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+      </div>
+      <div class="bar"><div id="pgBar"></div></div>
+    </div>
+    <aside class="pg-side" aria-label="Print status">
+      <div><div class="pg-label" id="pgState"></div><div class="pg-file" id="pgFile"></div></div>
+      <div class="pg-big"><span class="pg-pct" id="pgPct"></span><span class="pg-times"><strong id="pgLeft"></strong><span class="muted" id="pgDone"></span></span></div>
+      <dl class="pg-stats">
+        <div><dt>Nozzle</dt><dd id="pgNozzle"></dd></div><div><dt>Bed</dt><dd id="pgBed"></dd></div>
+        <div><dt>Elapsed</dt><dd id="pgElapsed"></dd></div><div><dt>Started</dt><dd id="pgStarted"></dd></div>
+      </dl>
+      <div class="pg-btns">
+        <button class="primary" id="pgPause">Pause</button>
+        <div class="row2"><button class="outline" id="pgCancel">Cancel</button><button class="stop" id="pgStop">E-Stop</button></div>
+      </div>
+    </aside>
+  </div>
+</section>
 
 <dialog id="qv" aria-labelledby="qvName">
   <div class="qv-head">
@@ -213,13 +268,14 @@ function render() {
         <div class="status"></div>
         <dl class="stats"><div><dt>Time left</dt><dd data-f="left"></dd></div>
           <div><dt>Nozzle</dt><dd data-f="nozzle"></dd></div><div><dt>Bed</dt><dd data-f="bed"></dd></div></dl>
-        <div class="actions"><button data-act="qv">Quick View</button></div>
+        <div class="actions"><button class="primary" data-act="open">Open</button><button class="outline" data-act="qv">Quick View</button></div>
         <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="remove" class="danger">Remove</button></div>`;
       const menu = el.querySelector(".menu"), mbtn = el.querySelector(".iconbtn");
       mbtn.onclick = () => { menu.hidden = !menu.hidden; mbtn.setAttribute("aria-expanded", String(!menu.hidden)); };
       el.querySelector("[data-act=rename]").onclick = () => { menu.hidden = true; rename(p.id); };
       el.querySelector("[data-act=remove]").onclick = () => { menu.hidden = true; removePrinter(p.id); };
       el.querySelector("[data-act=qv]").onclick = () => openQV(p.id);
+      el.querySelector("[data-act=open]").onclick = () => { location.hash = `printer-${p.id}`; };
       grid.append(el);
     }
     const st = statusOf(p);
@@ -257,6 +313,7 @@ function render() {
     if (p.has_webcam && !img.src) img.src = `/api/printers/${p.id}/snapshot?t=${Date.now()}`;
   }
   renderQV();
+  renderPage();
 }
 setInterval(() => {   // refresh webcam snapshots
   if (document.hidden) return;
@@ -279,7 +336,7 @@ async function removePrinter(id) {
 // ---- live updates --------------------------------------------------------------
 function connectEvents() {
   const es = new EventSource("/api/events");
-  es.addEventListener("snapshot", e => { printers.clear(); for (const p of JSON.parse(e.data)) printers.set(p.id, p); render(); });
+  es.addEventListener("snapshot", e => { printers.clear(); for (const p of JSON.parse(e.data)) printers.set(p.id, p); render(); route(); });
   es.addEventListener("printer", e => { const p = JSON.parse(e.data); printers.set(p.id, p); render(); });
   es.addEventListener("removed", e => { printers.delete(JSON.parse(e.data).id); render(); });
   es.addEventListener("event", e => { const d = JSON.parse(e.data); toast(`${d.name}: print ${d.event}`); });
@@ -372,8 +429,9 @@ function renderQV() {
   $("#qvCancel").disabled = !live || !active;
   $("#qvStop").disabled = !live;
 }
-async function qvAction(action) {
-  const p = printers.get(qvId); if (!p) return;
+async function qvAction(action) { return doAction(qvId, action); }
+async function doAction(id, action) {
+  const p = printers.get(id); if (!p) return;
   if (action === "cancel" && !confirm(`Cancel the print on ${p.name}?`)) return;
   if (action === "estop" && !confirm(`Emergency stop ${p.name}? This halts the printer immediately and Klipper will need a restart.`)) return;
   try { await api(`/api/printers/${p.id}/${action}`, { method: "POST" }); }
@@ -385,6 +443,61 @@ $("#qvPause").onclick = () => qvAction(printers.get(qvId)?.state === "paused" ? 
 $("#qvCancel").onclick = () => qvAction("cancel");
 $("#qvStop").onclick = () => qvAction("estop");
 setInterval(() => { if (qvId !== null && !document.hidden) refreshQVCam(); }, 2000);
+
+// ---- printer page --------------------------------------------------------------
+let pageId = null;
+const fmtClock = d => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+function route() {
+  const m = location.hash.match(/^#printer-(\d+)$/);
+  pageId = m ? +m[1] : null;
+  $("main").hidden = pageId !== null;
+  $("#page").hidden = pageId === null;
+  $("#pgImg").removeAttribute("src");
+  renderPage(); refreshPageCam(); window.scrollTo(0, 0);
+}
+function refreshPageCam() {
+  const p = printers.get(pageId);
+  if (p && p.has_webcam && p.connection === "online") $("#pgImg").src = `/api/printers/${p.id}/snapshot?t=${Date.now()}`;
+}
+function renderPage() {
+  if (pageId === null) return;
+  const p = printers.get(pageId);
+  if (!p) { if (printers.size) location.hash = ""; return; }
+  const st = statusOf(p);
+  const [tagText, tagColor, barColor, statusText, statusColor] = look(st);
+  const live = p.connection === "online";
+  const active = p.state === "printing" || p.state === "paused";
+  const showPct = active || p.state === "complete";
+  const pct = showPct ? p.progress : 0;
+  $("#pgName").textContent = p.name;
+  const tag = $("#pgTag"); tag.textContent = tagText; tag.className = `tag ${tagColor}`;
+  const camOk = p.has_webcam && live;
+  $("#pgImg").hidden = !camOk; $("#pgNoCam").hidden = camOk; $("#pgFull").hidden = !camOk;
+  $("#pgNoCam").textContent = live ? "No camera" : "Can't reach printer";
+  $("#pgBar").style.width = `${pct * 100}%`; $("#pgBar").style.background = barColor;
+  const state = $("#pgState"); state.textContent = (p.state === "error" && p.message) || statusText; state.style.color = statusColor;
+  $("#pgFile").textContent = showPct && p.filename ? p.filename : "";
+  const pctEl = $("#pgPct");
+  pctEl.innerHTML = showPct ? `${Math.floor(pct * 100)}<small>%</small>` : "";
+  pctEl.style.color = p.state === "complete" ? "var(--lilac)" : "var(--orange)";
+  $("#pgLeft").textContent = active && p.eta != null ? `${fmtDur(p.eta)} left` : "";
+  $("#pgDone").textContent = active && p.eta != null ? `done around ${fmtClock(new Date(Date.now() + p.eta * 1000))}` : "";
+  $("#pgNozzle").textContent = live ? fmtTemp(p.nozzle) : "—";
+  $("#pgBed").textContent = live ? fmtTemp(p.bed) : "—";
+  $("#pgElapsed").textContent = active && p.print_duration ? fmtDur(p.print_duration) : "—";
+  $("#pgStarted").textContent = active && p.print_duration ? fmtClock(new Date(Date.now() - p.print_duration * 1000)) : "—";
+  const pause = $("#pgPause");
+  pause.textContent = p.state === "paused" ? "Resume" : "Pause";
+  pause.disabled = !live || !active;
+  $("#pgCancel").disabled = !live || !active;
+  $("#pgStop").disabled = !live;
+}
+$("#pgPause").onclick = () => doAction(pageId, printers.get(pageId)?.state === "paused" ? "resume" : "pause");
+$("#pgCancel").onclick = () => doAction(pageId, "cancel");
+$("#pgStop").onclick = () => doAction(pageId, "estop");
+$("#pgFull").onclick = () => $("#pgCam").requestFullscreen?.();
+window.addEventListener("hashchange", route);
+setInterval(() => { if (pageId !== null && !document.hidden) refreshPageCam(); }, 2000);
 
 connectEvents();
 render();

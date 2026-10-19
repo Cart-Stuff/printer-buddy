@@ -294,6 +294,18 @@ class MoonrakerClient:
                 return f"http://{self.host}{url if url.startswith('/') else '/' + url}"
         return None
 
+    def cam_info(self) -> dict | None:
+        """Flip / rotation / fps as configured for this camera in Moonraker."""
+        for cam in self.webcams:
+            if cam.get("snapshot_url"):
+                try:
+                    rotation = int(cam.get("rotation") or 0)
+                except (TypeError, ValueError):
+                    rotation = 0
+                return {"flip_h": bool(cam.get("flip_horizontal")), "flip_v": bool(cam.get("flip_vertical")),
+                        "rotation": rotation, "target_fps": cam.get("target_fps")}
+        return None
+
     def view(self) -> dict:
         s = self.status
         ps = s.get("print_stats", {})
@@ -321,6 +333,7 @@ class MoonrakerClient:
             "bed": s.get("heater_bed", {}).get("temperature"),
             "bed_target": s.get("heater_bed", {}).get("target"),
             "has_webcam": self.snapshot_url() is not None,
+            "cam": self.cam_info(),
             "speed_factor": s.get("gcode_move", {}).get("speed_factor"),
             "homed_axes": s.get("toolhead", {}).get("homed_axes"),
         }

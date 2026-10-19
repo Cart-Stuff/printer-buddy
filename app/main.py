@@ -108,8 +108,24 @@ async def update_printer(request: Request):
     if pid is None:
         return err("not found", 404)
     b = await body(request)
-    if "name" not in b and "group" not in b:
+    if "name" not in b and "group" not in b and "camera" not in b:
         return err("nothing to change")
+    if "camera" in b:
+        c = b.get("camera")
+        if c is None:
+            cam = None
+        elif isinstance(c, dict):
+            try:
+                rotation = int(c.get("rotation") or 0)
+            except (TypeError, ValueError):
+                return err("bad camera settings")
+            refresh = c.get("refresh")
+            if rotation not in (0, 90, 180, 270) or refresh not in (None, 1, 2, 5, 10):
+                return err("bad camera settings")
+            cam = {"flip_h": bool(c.get("flip_h")), "flip_v": bool(c.get("flip_v")), "rotation": rotation, "refresh": refresh}
+        else:
+            return err("bad camera settings")
+        manager.set_camera(pid, cam)
     if "name" in b:
         name = str(b.get("name") or "").strip()
         if not name:

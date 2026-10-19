@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from .moonraker import MoonrakerClient
@@ -58,6 +59,12 @@ class Manager:
         self.rows[pid]["grp"] = group
         self._broadcast("printer", self.view(pid))
 
+    def set_camera(self, pid: int, cfg: dict | None):
+        value = json.dumps(cfg) if cfg else None
+        self.store.update(pid, cam=value)
+        self.rows[pid]["cam"] = value
+        self._broadcast("printer", self.view(pid))
+
     def set_order(self, ids: list[int]):
         ids = [i for i in ids if i in self.rows]
         self.store.set_order(ids)
@@ -80,6 +87,7 @@ class Manager:
         return {
             "id": pid, "name": row["name"], "host": row["host"], "port": row["port"],
             "has_api_key": bool(row["api_key"]), "group": row.get("grp"), "position": row.get("position"),
+            "cam_settings": json.loads(row["cam"]) if row.get("cam") else None,
             **self.clients[pid].view(),
         }
 

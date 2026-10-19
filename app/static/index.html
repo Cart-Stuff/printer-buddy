@@ -73,6 +73,23 @@
   .viewbar select { font: inherit; font-weight: 700; min-height: 44px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card2); color: var(--text); }
   .viewbar input[type="search"] { width: 200px; }
   .lname { display: none; }
+  .fps { position: absolute; top: 10px; right: 62px; padding: 4px 8px; border-radius: 6px; background: rgba(11,11,13,.8);
+         font: 700 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text); pointer-events: none; }
+  .qv-cam .fps, .pg-cam .fps, .ctl-cam .fps { right: auto; left: 12px; top: 12px; }
+  img[hidden] ~ .fps, .grid.list .fps { display: none; }
+  .ctl-camsec { grid-column: 1 / -1; padding: 0 !important; overflow: hidden; }
+  .ctl-cam { position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: 440px; background: #000; overflow: hidden; }
+  .ctl-cam img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .cam, .qv-cam, .pg-cam { overflow: hidden; }
+  dialog#camDlg { width: min(420px, calc(100% - 32px)); padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--text); }
+  dialog#camDlg::backdrop { background: rgba(5,5,7,.8); }
+  #camDlg h2 { margin: 0 0 14px; font-size: 18px; }
+  #camDlg form { display: flex; flex-direction: column; gap: 12px; }
+  #camDlg .chk { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+  #camDlg .chk input { min-height: 0; width: 18px; height: 18px; accent-color: var(--orange); }
+  #camDlg label.sel { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  #camDlg select { font: inherit; min-height: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card2); color: var(--text); }
+  #camDlg .dlg-btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 6px; }
   .grp-head { flex: 0 0 100%; margin: 10px 0 -6px; font-size: 13px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
   .grp-head:first-child { margin-top: 0; }
   .grid.list .grp-head { margin: 10px 0 0; }
@@ -279,7 +296,7 @@
   <div class="pg-body" id="pgStatus" role="tabpanel" aria-labelledby="tabStatus">
     <div class="pg-cambox">
       <div class="pg-cam" id="pgCam">
-        <img id="pgImg" alt="Webcam" hidden><div class="nocam" id="pgNoCam">No camera</div>
+        <img id="pgImg" alt="Webcam" hidden><div class="nocam" id="pgNoCam">No camera</div><span class="fps" aria-hidden="true"></span>
         <button class="pg-full" id="pgFull" aria-label="Full screen"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
       </div>
       <div class="bar"><div id="pgBar"></div></div>
@@ -299,6 +316,9 @@
   </div>
 
   <div class="ctl" id="pgControl" role="tabpanel" aria-labelledby="tabControl" hidden>
+    <section class="ctl-camsec" aria-label="Camera">
+      <div class="ctl-cam"><img id="ctlImg" alt="Webcam" hidden><div class="nocam" id="ctlNoCam">No camera</div><span class="fps" aria-hidden="true"></span></div>
+    </section>
     <section aria-labelledby="ctlTempH">
       <h2 id="ctlTempH">Temperatures</h2>
       <div class="heat">
@@ -377,13 +397,28 @@
   </div>
 </section>
 
+<dialog id="camDlg" aria-labelledby="camDlgTitle">
+  <h2 id="camDlgTitle">Camera settings</h2>
+  <form id="camForm">
+    <label class="chk"><input type="checkbox" name="flip_h"> Flip horizontally</label>
+    <label class="chk"><input type="checkbox" name="flip_v"> Flip vertically</label>
+    <label class="sel">Rotate <select name="rotation"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label>
+    <label class="sel">Refresh every <select name="refresh"><option value="">Default (5 s cards, 2 s large)</option><option value="1">1 second</option><option value="2">2 seconds</option><option value="5">5 seconds</option><option value="10">10 seconds</option></select></label>
+    <div class="dlg-btns">
+      <button type="button" id="camReset">Use Moonraker's settings</button>
+      <button type="button" id="camCancel">Cancel</button>
+      <button class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="qv" aria-labelledby="qvName">
   <div class="qv-head">
     <h2 id="qvName"></h2><span class="tag" id="qvTag"></span>
     <span class="spacer"></span>
     <button class="qv-close" id="qvClose" aria-label="Close Quick View"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
   </div>
-  <div class="qv-cam"><img id="qvImg" alt="Webcam" hidden><div class="nocam" id="qvNoCam">No camera</div></div>
+  <div class="qv-cam"><img id="qvImg" alt="Webcam" hidden><div class="nocam" id="qvNoCam">No camera</div><span class="fps" aria-hidden="true"></span></div>
   <div class="bar"><div id="qvBar"></div></div>
   <div class="qv-foot">
     <div class="qv-info"><span class="line" id="qvLine"></span><span class="sub" id="qvSub"></span></div>
@@ -453,6 +488,7 @@ function render() {
       el.innerHTML = `<div class="cam"><img alt="" hidden><div class="nocam">${NOCAM_SVG}<span></span></div>
           <span class="tag"></span>
           <button class="iconbtn" aria-label="Printer settings" aria-expanded="false">${MENU_SVG}</button>
+          <span class="fps" aria-hidden="true"></span>
           <div class="caption"><span class="name"></span><span class="pct"></span></div></div>
         <div class="lname"><span class="name"></span><span class="pct"></span></div>
         <div class="bar"><div></div></div>
@@ -460,12 +496,13 @@ function render() {
         <dl class="stats"><div><dt>Time left</dt><dd data-f="left"></dd></div>
           <div><dt>Nozzle</dt><dd data-f="nozzle"></dd></div><div><dt>Bed</dt><dd data-f="bed"></dd></div></dl>
         <div class="actions"><button class="primary" data-act="open">Open</button><button class="outline" data-act="qv">Quick View</button></div>
-        <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="group">Set group</button><button data-act="remove" class="danger">Remove</button></div>`;
+        <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="group">Set group</button><button data-act="camera">Camera settings</button><button data-act="remove" class="danger">Remove</button></div>`;
       const menu = el.querySelector(".menu"), mbtn = el.querySelector(".iconbtn");
       mbtn.onclick = () => { menu.hidden = !menu.hidden; mbtn.setAttribute("aria-expanded", String(!menu.hidden)); };
       el.querySelector("[data-act=rename]").onclick = () => { menu.hidden = true; rename(p.id); };
       el.querySelector("[data-act=remove]").onclick = () => { menu.hidden = true; removePrinter(p.id); };
       el.querySelector("[data-act=group]").onclick = () => { menu.hidden = true; setGroup(p.id); };
+      el.querySelector("[data-act=camera]").onclick = () => { menu.hidden = true; openCamDlg(p.id); };
       el.addEventListener("dragstart", e => { dragId = p.id; el.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(p.id)); });
       el.addEventListener("dragend", () => { dragId = null; el.classList.remove("dragging"); clearDrop(); });
       el.addEventListener("dragover", e => { if (dragId === null || dragId === p.id) return; e.preventDefault(); clearDrop(); el.classList.add("drop-before"); });
@@ -508,7 +545,7 @@ function render() {
     img.hidden = !camOk;
     nocam.hidden = camOk;
     nocam.querySelector("span").textContent = !live ? "Can't reach printer" : "No camera";
-    if (p.has_webcam && !img.src) img.src = `/api/printers/${p.id}/snapshot?t=${Date.now()}`;
+    img.dataset.camPid = p.id; img.dataset.camKind = "card";
   }
   arrange();
   renderQV();
@@ -588,11 +625,71 @@ $("#sortBy").onchange = () => { prefs.sort = $("#sortBy").value; savePrefs(); ar
 $("#search").oninput = arrange;
 if (prefs.sort) $("#sortBy").value = prefs.sort;
 setView(prefs.view === "list" ? "list" : "cards");
-setInterval(() => {   // refresh webcam snapshots
+// ---- camera refresh, flip/rotate and FPS (one loop for every camera box) ------------
+const camState = new WeakMap();
+function camCfg(p) {
+  const c = p.cam_settings || {}, m = p.cam || {};
+  return { flipH: c.flip_h ?? m.flip_h ?? false, flipV: c.flip_v ?? m.flip_v ?? false,
+           rotation: c.rotation ?? m.rotation ?? 0, refresh: c.refresh ?? null, target: m.target_fps ?? null };
+}
+function applyCamTransform(img, cfg) {
+  const box = img.parentElement, w = box.clientWidth, h = box.clientHeight;
+  const key = `${cfg.flipH}|${cfg.flipV}|${cfg.rotation}|${w}x${h}`;
+  if (img.dataset.tf === key) return;
+  img.dataset.tf = key;
+  const r = ((cfg.rotation % 360) + 360) % 360, t = `rotate(${r}deg) scale(${cfg.flipH ? -1 : 1}, ${cfg.flipV ? -1 : 1})`;
+  if (r === 90 || r === 270) Object.assign(img.style, { inset: "auto", left: "50%", top: "50%", width: `${h}px`, height: `${w}px`, transform: `translate(-50%, -50%) ${t}` });
+  else Object.assign(img.style, { inset: "", left: "", top: "", width: "", height: "", transform: t });
+}
+function showFps(img, st, cfg) {
+  const badge = img.parentElement.querySelector(".fps"); if (!badge) return;
+  const now = performance.now();
+  st.frames = st.frames.filter(t => now - t < 30000);
+  const n = st.frames.length, span = n > 1 ? (st.frames[n - 1] - st.frames[0]) / 1000 : 0;
+  const fps = span > 0 ? (n - 1) / span : null;
+  badge.textContent = (fps ? `${fps < 1 ? fps.toFixed(1) : Math.round(fps)} fps` : "— fps") + (cfg.target ? ` · cam ${cfg.target}` : "");
+}
+function camTick() {
   if (document.hidden) return;
-  for (const img of document.querySelectorAll(".card .cam img:not([hidden])"))
-    img.src = `/api/printers/${img.closest(".card").dataset.id}/snapshot?t=${Date.now()}`;
-}, 5000);
+  const now = performance.now();
+  for (const img of document.querySelectorAll("img[data-cam-pid]")) {
+    const pid = +img.dataset.camPid, p = printers.get(pid);
+    if (!img.dataset.camPid || !p || !img.offsetParent) continue;   // hidden, closed or off-screen tab
+    const cfg = camCfg(p), every = (cfg.refresh ?? (img.dataset.camKind === "card" ? 5 : 2)) * 1000;
+    let st = camState.get(img);
+    if (!st || st.pid !== pid) { st = { pid, last: 0, loading: false, frames: [] }; camState.set(img, st); }
+    applyCamTransform(img, cfg);
+    if (!st.loading && now - st.last >= every) {
+      st.loading = true; st.last = now;
+      img.onload = () => { st.loading = false; st.frames.push(performance.now()); showFps(img, st, cfg); };
+      img.onerror = () => { st.loading = false; };
+      img.src = `/api/printers/${pid}/snapshot?t=${Date.now()}`;
+    } else showFps(img, st, cfg);
+  }
+}
+setInterval(camTick, 250);
+
+// ---- camera settings dialog
+let camDlgId = null;
+function openCamDlg(id) {
+  const p = printers.get(id); if (!p) return;
+  camDlgId = id;
+  const cfg = camCfg(p), f = $("#camForm");
+  $("#camDlgTitle").textContent = `Camera settings: ${p.name}`;
+  f.flip_h.checked = cfg.flipH; f.flip_v.checked = cfg.flipV;
+  f.rotation.value = String(cfg.rotation); f.refresh.value = cfg.refresh ? String(cfg.refresh) : "";
+  $("#camDlg").showModal();
+}
+async function saveCam(camera) {
+  try { printers.set(camDlgId, await api(`/api/printers/${camDlgId}`, { method: "PATCH", body: JSON.stringify({ camera }) })); $("#camDlg").close(); render(); }
+  catch (e) { toast(e.message); }
+}
+$("#camForm").onsubmit = e => {
+  e.preventDefault(); const f = e.target;
+  saveCam({ flip_h: f.flip_h.checked, flip_v: f.flip_v.checked, rotation: +f.rotation.value, refresh: f.refresh.value ? +f.refresh.value : null });
+};
+$("#camReset").onclick = () => saveCam(null);
+$("#camCancel").onclick = () => $("#camDlg").close();
 
 async function rename(id) {
   const p = printers.get(id); const name = prompt("Printer name", p.name);
@@ -673,10 +770,7 @@ function openQV(id) {
   qvId = id; $("#qvImg").removeAttribute("src"); renderQV();
   refreshQVCam(); $("#qv").showModal();
 }
-function refreshQVCam() {
-  const p = printers.get(qvId);
-  if (p && p.has_webcam && p.connection === "online") $("#qvImg").src = `/api/printers/${p.id}/snapshot?t=${Date.now()}`;
-}
+function refreshQVCam() { const img = $("#qvImg"); camState.delete(img); img.dataset.camPid = qvId ?? ""; img.dataset.camKind = "big"; }
 function renderQV() {
   if (qvId === null) return;
   const p = printers.get(qvId);
@@ -716,7 +810,7 @@ $("#qv").addEventListener("close", () => { qvId = null; });
 $("#qvPause").onclick = () => qvAction(printers.get(qvId)?.state === "paused" ? "resume" : "pause");
 $("#qvCancel").onclick = () => qvAction("cancel");
 $("#qvStop").onclick = () => qvAction("estop");
-setInterval(() => { if (qvId !== null && !document.hidden) refreshQVCam(); }, 2000);
+
 
 // ---- printer page --------------------------------------------------------------
 let pageId = null;
@@ -726,13 +820,12 @@ function route() {
   pageId = m ? +m[1] : null;
   $("main").hidden = pageId !== null;
   $("#page").hidden = pageId === null;
-  $("#pgImg").removeAttribute("src");
+  $("#pgImg").removeAttribute("src"); $("#ctlImg").removeAttribute("src");
   showTab("status");
   renderPage(); refreshPageCam(); window.scrollTo(0, 0);
 }
 function refreshPageCam() {
-  const p = printers.get(pageId);
-  if (p && p.has_webcam && p.connection === "online") $("#pgImg").src = `/api/printers/${p.id}/snapshot?t=${Date.now()}`;
+  for (const img of [$("#pgImg"), $("#ctlImg")]) { camState.delete(img); img.dataset.camPid = pageId ?? ""; img.dataset.camKind = "big"; }
 }
 function renderPage() {
   if (pageId === null) return;
@@ -953,6 +1046,9 @@ $("#ctlSpeed").onchange = () => { speedDragging = false; gcode(`M220 S${$("#ctlS
 function renderControl(p) {
   const live = p.connection === "online" && p.klippy_state === "ready";
   const printing = p.state === "printing" || p.state === "paused";
+  const camOk = p.has_webcam && p.connection === "online";
+  $("#ctlImg").hidden = !camOk; $("#ctlNoCam").hidden = camOk;
+  $("#ctlNoCam").textContent = p.connection === "online" ? "No camera" : "Can't reach printer";
   $("#ctlNozzleNow").textContent = live ? fmtTemp(p.nozzle) : "—";
   $("#ctlBedNow").textContent = live ? fmtTemp(p.bed) : "—";
   for (const el of $("#pgControl").querySelectorAll("button, input")) el.disabled = !live;
@@ -965,7 +1061,7 @@ function renderControl(p) {
     $("#ctlSpeed").value = v; $("#ctlSpeedOut").textContent = `${v}%`;
   }
 }
-setInterval(() => { if (pageId !== null && !document.hidden) refreshPageCam(); }, 2000);
+
 
 connectEvents();
 render();

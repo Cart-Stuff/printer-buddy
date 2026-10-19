@@ -24,6 +24,12 @@ class Store:
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(printers)")}
+        with self.db:
+            if "grp" not in cols:
+                self.db.execute("ALTER TABLE printers ADD COLUMN grp TEXT")
+            if "position" not in cols:
+                self.db.execute("ALTER TABLE printers ADD COLUMN position INTEGER")
 
     def list(self) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM printers ORDER BY id")]
@@ -44,12 +50,16 @@ class Store:
         return self.get(cur.lastrowid)
 
     def update(self, pid: int, **fields):
-        allowed = {k: v for k, v in fields.items() if k in ("name", "api_key")}
+        allowed = {k: v for k, v in fields.items() if k in ("name", "api_key", "grp", "position")}
         if not allowed:
             return
         sets = ", ".join(f"{k}=?" for k in allowed)
         with self.db:
             self.db.execute(f"UPDATE printers SET {sets} WHERE id=?", (*allowed.values(), pid))
+
+    def set_order(self, ids: list[int]):
+        with self.db:
+            self.db.executemany("UPDATE printers SET position=? WHERE id=?", [(i, pid) for i, pid in enumerate(ids)])
 
     def delete(self, pid: int):
         with self.db:

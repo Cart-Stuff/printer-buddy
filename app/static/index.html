@@ -73,6 +73,13 @@
   .viewbar select { font: inherit; font-weight: 700; min-height: 44px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card2); color: var(--text); }
   .viewbar input[type="search"] { width: 200px; }
   .lname { display: none; }
+  .grp-head { flex: 0 0 100%; margin: 10px 0 -6px; font-size: 13px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .grp-head:first-child { margin-top: 0; }
+  .grid.list .grp-head { margin: 10px 0 0; }
+  .card[draggable="true"] { cursor: grab; }
+  .card.dragging { opacity: .4; }
+  .card.drop-before { box-shadow: -4px 0 0 0 var(--orange); }
+  .grid.list .card.drop-before { box-shadow: 0 -3px 0 0 var(--orange); }
   .grid.list { flex-direction: column; flex-wrap: nowrap; gap: 8px; }
   .grid.list .card { flex: none; width: 100%; min-width: 0; display: grid; grid-template-columns: 128px minmax(150px, 1.3fr) minmax(220px, 2fr) auto;
                      grid-template-rows: auto auto; align-items: center; column-gap: 18px; row-gap: 6px; padding: 0 14px 0 0; }
@@ -221,7 +228,7 @@
           <button id="viewCards" aria-pressed="true">Cards</button><button id="viewList" aria-pressed="false">List</button>
         </div>
         <label><span class="muted" style="font-weight:700">Sort </span><select id="sortBy">
-          <option value="status">Status</option><option value="name">Name</option><option value="progress">Progress</option>
+          <option value="status">Status</option><option value="name">Name</option><option value="progress">Progress</option><option value="custom">Custom (drag)</option>
         </select></label>
         <input type="search" id="search" placeholder="Search printers" aria-label="Search printers">
       </div>
@@ -437,7 +444,7 @@ const MENU_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="t
 function render() {
   const grid = $("#grid");
   $("#empty").hidden = printers.size > 0;
-  for (const el of [...grid.children]) if (!printers.has(+el.dataset.id)) el.remove();
+  for (const el of [...grid.querySelectorAll(".card")]) if (!printers.has(+el.dataset.id)) el.remove();
   for (const p of printers.values()) {
     let el = grid.querySelector(`[data-id="${p.id}"]`);
     if (!el) {
@@ -453,11 +460,17 @@ function render() {
         <dl class="stats"><div><dt>Time left</dt><dd data-f="left"></dd></div>
           <div><dt>Nozzle</dt><dd data-f="nozzle"></dd></div><div><dt>Bed</dt><dd data-f="bed"></dd></div></dl>
         <div class="actions"><button class="primary" data-act="open">Open</button><button class="outline" data-act="qv">Quick View</button></div>
-        <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="remove" class="danger">Remove</button></div>`;
+        <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="group">Set group</button><button data-act="remove" class="danger">Remove</button></div>`;
       const menu = el.querySelector(".menu"), mbtn = el.querySelector(".iconbtn");
       mbtn.onclick = () => { menu.hidden = !menu.hidden; mbtn.setAttribute("aria-expanded", String(!menu.hidden)); };
       el.querySelector("[data-act=rename]").onclick = () => { menu.hidden = true; rename(p.id); };
       el.querySelector("[data-act=remove]").onclick = () => { menu.hidden = true; removePrinter(p.id); };
+      el.querySelector("[data-act=group]").onclick = () => { menu.hidden = true; setGroup(p.id); };
+      el.addEventListener("dragstart", e => { dragId = p.id; el.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(p.id)); });
+      el.addEventListener("dragend", () => { dragId = null; el.classList.remove("dragging"); clearDrop(); });
+      el.addEventListener("dragover", e => { if (dragId === null || dragId === p.id) return; e.preventDefault(); clearDrop(); el.classList.add("drop-before"); });
+      el.addEventListener("dragleave", () => el.classList.remove("drop-before"));
+      el.addEventListener("drop", e => { e.preventDefault(); clearDrop(); dropBefore(p.id); });
       el.querySelector("[data-act=qv]").onclick = () => openQV(p.id);
       el.querySelector("[data-act=open]").onclick = () => { location.hash = `printer-${p.id}`; };
       grid.append(el);
@@ -511,16 +524,57 @@ function arrange() {
   const list = [...printers.values()].sort((a, b) => {
     if (by === "status") { const d = (RANK[statusOf(a)] ?? 6) - (RANK[statusOf(b)] ?? 6); if (d) return d; }
     if (by === "progress") { const pa = ["printing", "paused"].includes(a.state) ? a.progress : -1, pb = ["printing", "paused"].includes(b.state) ? b.progress : -1; if (pa !== pb) return pb - pa; }
+    if (by === "custom") { const d = (a.position ?? 1e9) - (b.position ?? 1e9); if (d) return d; }
     return a.name.localeCompare(b.name);
   });
-  const want = list.map(p => String(p.id)), have = [...grid.children].map(el => el.dataset.id);
-  if (want.join() !== have.join()) for (const id of want) grid.append(grid.querySelector(`[data-id="${id}"]`));
+  // group headings: only when at least one printer has a group; named groups A–Z, ungrouped last
+  const grouped = list.some(p => p.group);
+  const groups = grouped ? [...new Set(list.map(p => p.group || ""))].sort((a, b) => !a ? 1 : !b ? -1 : a.localeCompare(b)) : [""];
+  const want = [];
+  for (const g of groups) {
+    if (grouped) want.push(`g:${g}`);
+    for (const p of list) if (!grouped || (p.group || "") === g) want.push(String(p.id));
+  }
+  const have = [...grid.children].map(el => el.dataset.id ?? `g:${el.dataset.group}`);
+  if (want.join("|") !== have.join("|")) {
+    for (const h of grid.querySelectorAll(".grp-head")) h.remove();
+    for (const key of want) {
+      if (key.startsWith("g:")) {
+        const h = document.createElement("h2"); h.className = "grp-head"; h.dataset.group = key.slice(2);
+        h.textContent = key.slice(2) || "Ungrouped"; grid.append(h);
+      } else grid.append(grid.querySelector(`[data-id="${key}"]`));
+    }
+  }
+  for (const el of grid.querySelectorAll(".card")) el.draggable = by === "custom";
   let shown = 0;
   for (const p of list) {
     const hit = !q || p.name.toLowerCase().includes(q);
     grid.querySelector(`[data-id="${p.id}"]`).hidden = !hit; if (hit) shown++;
   }
   $("#noMatch").hidden = !(printers.size && !shown);
+  for (const h of grid.querySelectorAll(".grp-head")) {   // hide a heading whose printers are all filtered out
+    let n = h.nextElementSibling, any = false;
+    while (n && !n.classList.contains("grp-head")) { if (!n.hidden) any = true; n = n.nextElementSibling; }
+    h.hidden = !any;
+  }
+}
+let dragId = null;
+const clearDrop = () => { for (const c of document.querySelectorAll(".drop-before")) c.classList.remove("drop-before"); };
+async function dropBefore(targetId) {
+  if (dragId === null || dragId === targetId) return;
+  const grid = $("#grid"), dragged = grid.querySelector(`[data-id="${dragId}"]`), target = grid.querySelector(`[data-id="${targetId}"]`);
+  grid.insertBefore(dragged, target);
+  const ids = [...grid.querySelectorAll(".card")].map(el => +el.dataset.id);
+  ids.forEach((id, i) => { const p = printers.get(id); if (p) p.position = i; });
+  try { await api("/api/printers/order", { method: "POST", body: JSON.stringify({ ids }) }); }
+  catch (e) { toast(e.message); }
+}
+async function setGroup(id) {
+  const p = printers.get(id);
+  const g = prompt(`Group for ${p.name} (leave empty for none)`, p.group || "");
+  if (g === null) return;
+  try { printers.set(id, await api(`/api/printers/${id}`, { method: "PATCH", body: JSON.stringify({ group: g.trim() }) })); render(); }
+  catch (e) { toast(e.message); }
 }
 function setView(v) {
   prefs.view = v; savePrefs();

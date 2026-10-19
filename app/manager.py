@@ -53,6 +53,18 @@ class Manager:
         self.rows[pid]["name"] = name
         self._broadcast("printer", self.view(pid))
 
+    def set_group(self, pid: int, group: str | None):
+        self.store.update(pid, grp=group)
+        self.rows[pid]["grp"] = group
+        self._broadcast("printer", self.view(pid))
+
+    def set_order(self, ids: list[int]):
+        ids = [i for i in ids if i in self.rows]
+        self.store.set_order(ids)
+        for pos, pid in enumerate(ids):
+            self.rows[pid]["position"] = pos
+            self._broadcast("printer", self.view(pid))
+
     async def remove(self, pid: int):
         c = self.clients.pop(pid, None)
         self.rows.pop(pid, None)
@@ -67,7 +79,8 @@ class Manager:
         row = self.rows[pid]
         return {
             "id": pid, "name": row["name"], "host": row["host"], "port": row["port"],
-            "has_api_key": bool(row["api_key"]), **self.clients[pid].view(),
+            "has_api_key": bool(row["api_key"]), "group": row.get("grp"), "position": row.get("position"),
+            **self.clients[pid].view(),
         }
 
     def views(self) -> list[dict]:

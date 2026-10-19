@@ -107,11 +107,25 @@ async def update_printer(request: Request):
     pid = _pid(request)
     if pid is None:
         return err("not found", 404)
-    name = str((await body(request)).get("name", "")).strip()
-    if not name:
-        return err("name is required")
-    manager.rename(pid, name)
+    b = await body(request)
+    if "name" not in b and "group" not in b:
+        return err("nothing to change")
+    if "name" in b:
+        name = str(b.get("name") or "").strip()
+        if not name:
+            return err("name is required")
+        manager.rename(pid, name)
+    if "group" in b:
+        manager.set_group(pid, str(b.get("group") or "").strip()[:40] or None)
     return JSONResponse(manager.view(pid))
+
+
+async def set_order(request: Request):
+    ids = (await body(request)).get("ids")
+    if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
+        return err("ids must be a list of printer ids")
+    manager.set_order(ids)
+    return JSONResponse({"ok": True})
 
 
 async def delete_printer(request: Request):
@@ -316,6 +330,7 @@ app = Starlette(routes=[
     Route("/api/probe", probe, methods=["POST"]),
     Route("/api/printers", list_printers),
     Route("/api/printers", add_printer, methods=["POST"]),
+    Route("/api/printers/order", set_order, methods=["POST"]),
     Route("/api/printers/{pid:int}", update_printer, methods=["PATCH"]),
     Route("/api/printers/{pid:int}", delete_printer, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/snapshot", snapshot),

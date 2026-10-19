@@ -314,6 +314,8 @@ def share_user_id() -> str:
 
 def share_url(request: Request, pid: int, code: str) -> str:
     domain = os.getenv("PB_SHARE_DOMAIN", "").strip().strip("/")
+    if not domain and setup()["remote"] == "on":
+        domain = "printerbuddy.stream"   # remote access on: links go through printerbuddy.stream by default
     if domain:
         host = domain if domain.startswith("www.") else f"www.{domain}"
         return f"https://{host}/share/user/{share_user_id()}/printer/{pid}/{code}"

@@ -183,6 +183,19 @@ class Collector:
         self._write(item)
         return item
 
+    def set_severity(self, iid: str, severity) -> dict | None:
+        """How bad was the failure, 1 (barely) to 10 (total mess). Only for failure labels."""
+        item = self._read(iid)
+        try:
+            n = int(severity)
+        except (TypeError, ValueError):
+            return None
+        if not item or item.get("status") == "sent" or not item.get("label") or item["label"] == "ok" or not 1 <= n <= 10:
+            return None
+        item["severity"] = n
+        self._write(item)
+        return item
+
     # print snapshots ---------------------------------------------------------
     def print_started(self, pid: int):
         self.marks[pid] = set()
@@ -248,7 +261,7 @@ class Collector:
                 "id": self.box_id(), "label": item["label"],
                 "source": item["source"] if item["source"] != "alert" else "alert_yes",
                 "image": base64.b64encode(img.read_bytes()).decode(),
-                "verdict": item.get("verdict"),
+                "verdict": item.get("verdict"), "severity": item.get("severity"),
                 "meta": {**item.get("meta", {}), "printer": item.get("printer")},
             }).encode()
             status, reply = await asyncio.to_thread(self._post, body)

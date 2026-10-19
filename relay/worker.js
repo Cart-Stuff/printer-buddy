@@ -264,13 +264,14 @@ async function contributeApi(request, env) {
 
   const meta = (b.meta && typeof b.meta === "object") ? b.meta : {};
   const verdict = VERDICTS.includes(b.verdict) ? b.verdict : "na";
+  const sev = Number.isInteger(b.severity) && b.severity >= 1 && b.severity <= 10 ? b.severity : null;
   const model = /^[A-Za-z0-9._-]{1,40}$/.test(String(meta.model || "")) ? String(meta.model) : "unknown";
   const score = Number.isFinite(Number(meta.score)) ? Math.round(Number(meta.score) * 100) : "na";
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");      // 20261019T211429
   const rand = Math.random().toString(36).slice(2, 6);
-  const path = `photos/${label}/${id}-${stamp}-${source}-${score}-${verdict}-${rand}.jpg`;
+  const path = `photos/${label}/${id}-${stamp}-${source}-${score}-${verdict}-s${sev ?? "na"}-${rand}.jpg`;
   const message = `${label} from box ${id} (${source}, AI ${verdict.replace("_", " ")})\n\n` +
-                  JSON.stringify({ id, label, source, verdict, meta }).slice(0, 4000);
+                  JSON.stringify({ id, label, source, verdict, severity: sev, meta }).slice(0, 4000);
 
   const api = `https://api.github.com/repos/${env.DATA_REPO}/contents/${path}`;
   for (let attempt = 0; attempt < 3; attempt++) {

@@ -10,6 +10,13 @@
 Only the box that created a tunnel (it keeps a key in `printer-buddy.env` as `PB_TUNNEL_KEY`) can change its port or remove it.
 Limits: one tunnel per ID, 5 new tunnels per network per day, 500 in total (both changeable below).
 
+## Automatic deploys
+
+`wrangler.toml` lets Cloudflare deploy `worker.js` itself on every push to GitHub, so there's no more pasting code:
+**Workers & Pages > printer-buddy-share > Settings > Builds > Connect** > repository `printer-buddy`, branch `main`,
+root directory `relay`, build command empty, deploy command `npx wrangler deploy`.
+Dashboard variables are kept (`keep_vars`), secrets are never touched. The KV binding, route and daily trigger come from `wrangler.toml`.
+
 ## One-time setup
 
 ### 1. Cloudflare API token

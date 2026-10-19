@@ -279,7 +279,11 @@ async def ai_photo_image(request: Request):
 
 
 async def ai_photo_label(request: Request):
-    label = (await body(request)).get("label")
+    b = await body(request)
+    if "severity" in b and "label" not in b:      # just "how bad was it?"
+        item = manager.collect.set_severity(request.path_params["iid"], b["severity"])
+        return JSONResponse(item) if item else err("can't rate that photo (needs a failure label, 1-10)")
+    label = b.get("label")
     item = manager.collect.set_label(request.path_params["iid"], label)
     if not item:
         return err("can't label that photo (unknown label, already sent, or gone)")

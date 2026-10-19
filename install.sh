@@ -124,17 +124,7 @@ hard_restart() {   # full stop, then start, then wait until it answers
   echo; echo "It started but isn't answering on port $port yet. Pick 'Show logs' to see why."; return 1
 }
 
-# ---------------------------------------------------------------- actions
-do_install() {
-  echo; echo "Installing..."
-  ensure_env
-  if ! python3 -c "import venv, ensurepip" 2>/dev/null; then
-    echo "Installing python3-venv..."
-    sudo apt-get update && sudo apt-get install -y python3-venv || { echo "Couldn't install python3-venv."; return 1; }
-  fi
-  [ -d "$DIR/.venv" ] || python3 -m venv "$DIR/.venv" || return 1
-  "$DIR/.venv/bin/pip" install --upgrade pip -q && "$DIR/.venv/bin/pip" install -r "$DIR/requirements.txt" -q || { echo "pip install failed."; return 1; }
-  mkdir -p "$DIR/data"
+write_unit() {   # (re)write the systemd service file
   sudo tee "$UNIT_FILE" >/dev/null <<UNIT
 [Unit]
 Description=Printer Buddy - self-hosted printer monitor
@@ -147,13 +137,28 @@ WorkingDirectory=$DIR
 Environment=DB_PATH=$DIR/data/monitor.db
 Environment=PORT=8080
 EnvironmentFile=-$ENV_FILE
-ExecStart=$DIR/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port \${PORT}
+ExecStart=$DIR/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port \${PORT} --timeout-graceful-shutdown 3
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 UNIT
+  sudo systemctl daemon-reload
+}
+
+# ---------------------------------------------------------------- actions
+do_install() {
+  echo; echo "Installing..."
+  ensure_env
+  if ! python3 -c "import venv, ensurepip" 2>/dev/null; then
+    echo "Installing python3-venv..."
+    sudo apt-get update && sudo apt-get install -y python3-venv || { echo "Couldn't install python3-venv."; return 1; }
+  fi
+  [ -d "$DIR/.venv" ] || python3 -m venv "$DIR/.venv" || return 1
+  "$DIR/.venv/bin/pip" install --upgrade pip -q && "$DIR/.venv/bin/pip" install -r "$DIR/requirements.txt" -q || { echo "pip install failed."; return 1; }
+  mkdir -p "$DIR/data"
+  write_unit
   sudo systemctl daemon-reload && sudo systemctl enable -q "$SERVICE" || return 1
   hard_restart || return 1
   echo "Printer Buddy is running: $(url)  (open dashboards reload themselves)"
@@ -163,7 +168,7 @@ do_update() {
   echo; echo "Updating..."
   git -C "$DIR" pull --ff-only || { echo "git pull failed (local changes?). Nothing else was changed."; return 1; }
   if [ -x "$DIR/.venv/bin/pip" ]; then "$DIR/.venv/bin/pip" install -r "$DIR/requirements.txt" -q || return 1; fi
-  if installed; then hard_restart || return 1; fi
+  if installed; then write_unit; hard_restart || return 1; fi
   echo "Updated to $(git -C "$DIR" log -1 --format='%h %s')"
   check_updates
 }

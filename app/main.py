@@ -47,7 +47,8 @@ def _pid(request: Request) -> int | None:
 
 # ---- pages -------------------------------------------------------------------
 async def index(request: Request):
-    return FileResponse(STATIC / "index.html")
+    # no-cache: the browser always checks for a newer page after an update
+    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 # ---- discovery -----------------------------------------------------------------

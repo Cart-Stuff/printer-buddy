@@ -47,6 +47,27 @@
   .tag.purple { background: var(--purple); color: #fff; }
   .tag.red { background: var(--red); color: #fff; }
   .tag.grey { color: var(--muted); }
+  .aib { position: absolute; left: 10px; top: 44px; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 900;
+         letter-spacing: .04em; background: rgba(11,11,13,.8); color: var(--muted); }
+  .aib.warn { color: var(--orange); }
+  .aib.hot { background: var(--red); color: #fff; }
+  .grid.list .aib { left: 6px; top: 30px; font-size: 11px; padding: 2px 6px; }
+  body.no-ai .ai { display: none !important; }
+  .pg-ai { padding: 12px 14px; border-radius: 8px; background: var(--card2); display: flex; flex-direction: column; gap: 10px; }
+  .pg-ai .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .pg-ai .head strong { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .pg-ai select { font: inherit; font-weight: 700; min-height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line);
+                  background: var(--card); color: var(--text); }
+  .ai-rows { display: grid; grid-template-columns: auto minmax(0, 1fr) 44px; gap: 6px 10px; align-items: center; font-size: 13px; }
+  .ai-rows .lb { color: var(--muted); text-transform: capitalize; }
+  .ai-rows .lb.alert { color: var(--text); font-weight: 700; }
+  .ai-rows .tr { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+  .ai-rows .tr > div { height: 100%; background: var(--lilac); transition: width .5s; }
+  .ai-rows .tr > div.alert { background: var(--orange); }
+  .ai-rows .tr > div.hot { background: var(--red); }
+  .ai-rows .v { text-align: right; font-weight: 700; }
+  .pg-ai .note { font-size: 13px; color: var(--muted); }
+  .pg-ai .note.hot { color: var(--red-text); font-weight: 700; }
   .iconbtn { position: absolute; right: 10px; top: 10px; width: 44px; padding: 0; display: flex; align-items: center;
              justify-content: center; background: rgba(11,11,13,.8); }
   .caption { position: absolute; left: 0; right: 0; bottom: 0; padding: 28px 14px 12px; display: flex; align-items: flex-end;
@@ -293,6 +314,7 @@
         </select></label>
         <input type="search" id="search" placeholder="Search printers" aria-label="Search printers">
       </div>
+      <button id="aiBtn" class="ai">AI</button>
       <button id="notifyBtn">Notifications</button>
       <button id="manualBtn">Add by IP</button>
       <button id="scanBtn" class="primary">Scan network</button>
@@ -346,6 +368,25 @@
       <div class="row" style="justify-content:flex-end">
         <button type="button" id="notifyClose">Close</button>
         <button type="button" id="notifyTest">Send test</button>
+        <button class="primary">Save</button>
+      </div>
+    </form>
+  </section>
+
+  <section id="aiPanel" class="panel ai" hidden>
+    <h2>AI failure detection</h2>
+    <form id="aiForm" class="nset">
+      <p class="muted" id="aiModel" style="margin:0"></p>
+      <div class="two">
+        <label class="field">Alert when a problem scores at least <select name="ai_threshold"></select></label>
+        <label class="field">Check the camera every <select name="ai_interval"></select></label>
+        <label class="field">…for this many checks in a row <select name="ai_hold"></select></label>
+        <label class="field">Then wait before alerting again <select name="ai_cooldown"></select></label>
+      </div>
+      <span class="hint">Higher score or more checks in a row = fewer false alarms, but a failure is caught a little later.
+        Each printer's mode (off, alert, auto-pause) is in its menu and on its page.</span>
+      <div class="row" style="justify-content:flex-end">
+        <button type="button" id="aiClose">Close</button>
         <button class="primary">Save</button>
       </div>
     </form>
@@ -407,6 +448,14 @@
         <div><dt>Nozzle</dt><dd id="pgNozzle"></dd></div><div><dt>Bed</dt><dd id="pgBed"></dd></div>
         <div><dt>Elapsed</dt><dd id="pgElapsed"></dd></div><div><dt>Started</dt><dd id="pgStarted"></dd></div>
       </dl>
+      <div class="pg-ai ai" id="pgAi" hidden>
+        <div class="head"><strong>AI watch</strong>
+          <select id="pgAiMode" aria-label="AI mode for this printer">
+            <option value="alert">Alert only</option><option value="pause">Alert + auto-pause</option><option value="off">Off</option>
+          </select></div>
+        <div class="ai-rows" id="pgAiRows"></div>
+        <div class="note" id="pgAiNote"></div>
+      </div>
       <div class="pg-btns">
         <button class="primary" id="pgPause">Pause</button>
         <div class="row2"><button class="outline" id="pgCancel">Cancel</button><button class="stop" id="pgStop">E-Stop</button></div>
@@ -616,6 +665,7 @@ function render() {
       el.className = "card"; el.dataset.id = p.id;
       el.innerHTML = `<div class="cam"><img alt="" hidden><div class="nocam">${NOCAM_SVG}<span></span></div>
           <span class="tag"></span>
+          <span class="aib ai" hidden></span>
           <button class="iconbtn" aria-label="Printer settings" aria-expanded="false">${MENU_SVG}</button>
           <span class="fps" aria-hidden="true"></span>
           <div class="caption"><span class="name"></span><span class="pct"></span></div></div>
@@ -625,7 +675,7 @@ function render() {
         <dl class="stats"><div><dt>Time left</dt><dd data-f="left"></dd></div>
           <div><dt>Nozzle</dt><dd data-f="nozzle"></dd></div><div><dt>Bed</dt><dd data-f="bed"></dd></div></dl>
         <div class="actions"><button class="primary" data-act="open">Open</button><button class="outline" data-act="qv">Quick View</button></div>
-        <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="group" class="adv">Set group</button><button data-act="camera">Camera settings</button><button data-act="notify" class="nadv">Notifications: on</button><button data-act="share" class="rmt">Share</button><button data-act="remove" class="danger">Remove</button></div>`;
+        <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="group" class="adv">Set group</button><button data-act="camera">Camera settings</button><button data-act="notify" class="nadv">Notifications: on</button><button data-act="ai" class="ai">AI: Alert only</button><button data-act="share" class="rmt">Share</button><button data-act="remove" class="danger">Remove</button></div>`;
       const menu = el.querySelector(".menu"), mbtn = el.querySelector(".iconbtn");
       mbtn.onclick = () => { menu.hidden = !menu.hidden; mbtn.setAttribute("aria-expanded", String(!menu.hidden)); };
       el.querySelector("[data-act=rename]").onclick = () => { menu.hidden = true; rename(p.id); };
@@ -633,6 +683,7 @@ function render() {
       el.querySelector("[data-act=group]").onclick = () => { menu.hidden = true; setGroup(p.id); };
       el.querySelector("[data-act=camera]").onclick = () => { menu.hidden = true; openCamDlg(p.id); };
       el.querySelector("[data-act=notify]").onclick = () => { menu.hidden = true; toggleNotify(p.id); };
+      el.querySelector("[data-act=ai]").onclick = () => { menu.hidden = true; cycleAI(p.id); };
       el.querySelector("[data-act=share]").onclick = () => { menu.hidden = true; openShare(p.id); };
       el.addEventListener("dragstart", e => { dragId = p.id; el.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(p.id)); });
       el.addEventListener("dragend", () => { dragId = null; el.classList.remove("dragging"); clearDrop(); });
@@ -650,6 +701,8 @@ function render() {
     const pct = showPct ? p.progress : 0;
     el.classList.toggle("dim", p.connection !== "online" || p.klippy_state !== "ready");
     el.querySelector("[data-act=notify]").textContent = `Notifications: ${p.notify === false ? "off" : "on"}`;
+    el.querySelector("[data-act=ai]").textContent = `AI: ${AI_MODE_TEXT[p.ai?.mode || "alert"]}`;
+    aiBadge(el, p);
 
     const tag = el.querySelector(".tag");
     tag.textContent = tagText; tag.className = `tag ${tagColor}`; tag.title = p.error || "";
@@ -952,6 +1005,10 @@ function connectEvents() {
   es.addEventListener("event", e => {
     const d = JSON.parse(e.data);
     if (d.event === "progress") return;   // progress updates go to phone/chat only
+    if (d.event === "ai_failure") {
+      toast(`${d.name}: possible ${d.label.replace("_", " ")} (${Math.round(d.score * 100)}%)${d.paused ? " — print paused" : ""}`);
+      return;
+    }
     toast(d.event === "offline" ? `${d.name} went offline mid-print` : d.event === "shutdown" ? `${d.name}: Klipper shut down` : `${d.name}: print ${d.event}`);
   });
 }
@@ -1106,6 +1163,7 @@ function renderPage() {
   $("#pgCancel").disabled = !live || !active;
   $("#pgStop").disabled = !live;
   renderControl(p);
+  renderPageAI(p);
   const conLive = p.connection === "online";
   for (const el of $("#pgConsole").querySelectorAll("button, input")) el.disabled = !conLive;
   for (const el of $("#pgFiles").querySelectorAll(".files-bar button, .files-bar input")) el.disabled = !conLive;
@@ -1454,6 +1512,89 @@ $("#shareCreate").onclick = async () => {
 };
 $("#shareClose").onclick = () => $("#shareDlg").close();
 
+// ---- AI failure detection (AI detection = basic) --------------------------------------
+let aiCfg = null;   // /api/ai/settings: thresholds + model info
+const AI_MODE_TEXT = { off: "Off", alert: "Alert only", pause: "Alert + auto-pause" };
+const aiThr = () => aiCfg?.ai_threshold ?? 0.6;
+const aiName = l => (l || "").replace("_", " ");
+function aiRecentAlert(a) { return !!a?.alerted_at && (Date.now() / 1000 - a.alerted_at) < (aiCfg?.ai_cooldown ?? 10) * 60; }
+function aiBadge(el, p) {
+  const b = el.querySelector(".aib"), a = p.ai;
+  const show = !!a && !!aiCfg?.model?.loaded && a.mode !== "off" && (a.watching || aiRecentAlert(a));
+  b.hidden = !show;
+  if (!show) return;
+  if (aiRecentAlert(a)) {
+    b.className = "aib ai hot"; b.textContent = `AI: ${aiName(a.top)}`; b.title = "The AI saw a possible failure";
+    return;
+  }
+  const s = a.score ?? 0;
+  b.className = "aib ai" + (s >= aiThr() ? " hot" : s >= aiThr() / 2 ? " warn" : "");
+  b.textContent = a.score == null ? "AI watching" : `AI ${Math.round(s * 100)}%`;
+  b.title = a.top ? `Highest: ${aiName(a.top)} ${Math.round(s * 100)}%` : "Waiting for the first check";
+}
+function renderPageAI(p) {
+  const box = $("#pgAi"), a = p.ai;
+  box.hidden = !a;
+  if (!a) return;
+  if (document.activeElement !== $("#pgAiMode")) $("#pgAiMode").value = a.mode;
+  const m = aiCfg?.model || {}, kinds = m.kinds || {};
+  const labels = m.labels?.length ? m.labels : Object.keys(a.scores || {});
+  $("#pgAiRows").innerHTML = labels.map(l => {
+    const v = a.scores?.[l], alert = kinds[l] === "alert", hot = alert && v >= aiThr();
+    return `<span class="lb ${alert ? "alert" : ""}">${esc(aiName(l))}</span>` +
+      `<div class="tr"><div class="${hot ? "hot" : alert ? "alert" : ""}" style="width:${(v || 0) * 100}%"></div></div>` +
+      `<span class="v">${v == null ? "—" : Math.round(v * 100) + "%"}</span>`;
+  }).join("");
+  const note = $("#pgAiNote");
+  note.className = "note";
+  if (aiCfg && !m.loaded) note.textContent = m.error || "No AI model loaded.";
+  else if (aiRecentAlert(a)) {
+    note.className = "note hot";
+    note.textContent = `Possible ${aiName(a.top)} at ${fmtClock(new Date(a.alerted_at * 1000))}` + (a.mode === "pause" ? " — paused the print." : " — check the print.");
+  }
+  else if (a.mode === "off") note.textContent = "AI is off for this printer.";
+  else if (a.watching) note.textContent = `Checks every ${aiCfg?.ai_interval ?? 10}s. Alerts after ${aiCfg?.ai_hold ?? 3} checks in a row at ${Math.round(aiThr() * 100)}% or more` + (a.streak ? ` (${a.streak} so far).` : ".");
+  else note.textContent = "Starts watching when a print starts. Orange bars can alert; the others are warnings only.";
+}
+async function setAIMode(id, mode) {
+  try {
+    printers.set(id, await api(`/api/printers/${id}`, { method: "PATCH", body: JSON.stringify({ ai: mode }) }));
+    render(); toast(`AI for ${printers.get(id).name}: ${AI_MODE_TEXT[mode]}`);
+  } catch (e) { toast(e.message); }
+}
+function cycleAI(id) {
+  const order = ["alert", "pause", "off"], cur = printers.get(id)?.ai?.mode || "alert";
+  setAIMode(id, order[(order.indexOf(cur) + 1) % order.length]);
+}
+$("#pgAiMode").onchange = e => setAIMode(pageId, e.target.value);
+async function loadAI() {
+  try { aiCfg = await api("/api/ai/settings"); render(); } catch {}
+}
+function fillAIForm() {
+  const f = $("#aiForm"), m = aiCfg.model;
+  const fmt = { ai_threshold: v => `${Math.round(v * 100)}%`, ai_interval: v => `${v} seconds`,
+                ai_hold: v => v === 1 ? "1 check" : `${v} checks`, ai_cooldown: v => `${v} minutes` };
+  for (const k of Object.keys(fmt)) {
+    f[k].innerHTML = aiCfg.choices[k].map(v => `<option value="${v}">${fmt[k](v)}</option>`).join("");
+    f[k].value = String(aiCfg[k]);
+  }
+  $("#aiModel").textContent = m.loaded
+    ? `Model ${m.tag}. Alerts on: ${m.labels.filter(l => m.kinds[l] === "alert").map(aiName).join(", ")}. Warnings only: ${m.labels.filter(l => m.kinds[l] !== "alert").map(aiName).join(", ")}.`
+    : (m.error || "No AI model loaded.");
+}
+$("#aiBtn").onclick = async () => {
+  const panel = $("#aiPanel"); panel.hidden = !panel.hidden;
+  if (!panel.hidden) { await loadAI(); if (aiCfg) fillAIForm(); }
+};
+$("#aiClose").onclick = () => $("#aiPanel").hidden = true;
+$("#aiForm").onsubmit = async e => {
+  e.preventDefault();
+  const f = $("#aiForm"), b = {};
+  for (const k of ["ai_threshold", "ai_interval", "ai_hold", "ai_cooldown"]) b[k] = +f[k].value;
+  try { aiCfg = await api("/api/ai/settings", { method: "PUT", body: JSON.stringify(b) }); toast("Saved"); render(); }
+  catch (err) { toast(err.message); }
+};
+
 // ---- setup from install.sh ----------------------------------------------------------
 let SETUP = { ui: "basic" };
 const isBasic = () => SETUP.ui !== "advanced";
@@ -1466,6 +1607,8 @@ async function loadConfig() {
     document.body.classList.toggle("notify-basic", SETUP.notify !== "advanced");
     document.body.classList.toggle("no-timelapse", SETUP.video !== "timelapse");
     document.body.classList.toggle("no-remote", SETUP.remote !== "on");
+    document.body.classList.toggle("no-ai", SETUP.ai !== "basic");
+    if (SETUP.ai === "basic") loadAI();
     if (isBasic()) {
       $("#grid").classList.remove("list");
       if ($("#sortBy").value === "custom") { $("#sortBy").value = "status"; arrange(); }
@@ -1476,7 +1619,7 @@ async function loadConfig() {
       + " — run ./install.sh to change";
   } catch {}
 }
-document.body.classList.add("ui-basic", "notify-basic", "no-timelapse", "no-remote");
+document.body.classList.add("ui-basic", "notify-basic", "no-timelapse", "no-remote", "no-ai");
 loadConfig();
 
 connectEvents();

@@ -1,0 +1,4 @@
+# Only needed for AI detection (installer: AI detection = basic). Needs 64-bit Linux on a Pi.
+onnxruntime>=1.17
+numpy>=1.24
+Pillow>=10.0

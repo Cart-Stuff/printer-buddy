@@ -33,6 +33,7 @@ class Manager:
         self._offline_timers: dict[int, asyncio.Task] = {}
         self._milestone: dict[int, int] = {}         # last progress % announced per printer
         self.timelapse = None                         # set by main.py (app/timelapse.py)
+        self.ai = None                                # set by main.py (app/ai.py)
         self._subs: set[asyncio.Queue] = set()
 
     async def start(self):
@@ -87,6 +88,18 @@ class Manager:
         self.rows[pid]["notify"] = 1 if on else 0
         self._broadcast("printer", self.view(pid))
 
+    def ai_mode(self, pid: int) -> str:
+        from .ai import DEFAULT_MODE, MODES
+        m = (self.rows.get(pid) or {}).get("ai")
+        return m if m in MODES else DEFAULT_MODE
+
+    def set_ai_mode(self, pid: int, mode: str):
+        self.store.update(pid, ai=mode)
+        self.rows[pid]["ai"] = mode
+        if self.ai:
+            self.ai.refresh(pid, self.view(pid))
+        self._broadcast("printer", self.view(pid))
+
     def set_order(self, ids: list[int]):
         ids = [i for i in ids if i in self.rows]
         self.store.set_order(ids)
@@ -100,6 +113,8 @@ class Manager:
         self._last.pop(pid, None)
         if self.timelapse:
             self.timelapse.cancel(pid)   # recordings already saved are kept
+        if self.ai:
+            self.ai.cancel(pid)
         if t := self._offline_timers.pop(pid, None):
             t.cancel()
         self.store.delete(pid)
@@ -115,6 +130,7 @@ class Manager:
             "has_api_key": bool(row["api_key"]), "group": row.get("grp"), "position": row.get("position"),
             "cam_settings": self._cam_settings(row), "notify": row.get("notify") != 0,
             "recording": self.timelapse.recording(pid) if self.timelapse else None,
+            "ai": self.ai.status(pid) if self.ai else None,
             **self.clients[pid].view(),
         }
 
@@ -140,6 +156,8 @@ class Manager:
                 self._milestone[pid] = 0
         if self.timelapse:
             self.timelapse.on_change(pid, prev, v)
+        if self.ai:
+            self.ai.on_change(pid, prev, v)
         # progress updates (advanced notifications): every N % while printing
         step = self.notifier.progress_step()
         if step and v["state"] == "printing" and prev["state"] in ("printing", "paused"):
@@ -174,6 +192,34 @@ class Manager:
             return
         if self.notifier.enabled and self.notifier.wants(event):
             asyncio.get_running_loop().create_task(self._notify(pid, event, v))
+
+    # AI ---------------------------------------------------------------------
+    def ai_update(self, pid: int):
+        if pid in self.rows:
+            self._broadcast("printer", self.view(pid))
+
+    async def ai_alert(self, pid: int, label: str, score: float, image: bytes | None, mode: str):
+        """The AI saw a failure that held long enough: pause (if set) and tell the user."""
+        c, row = self.clients.get(pid), self.rows.get(pid)
+        if not c or not row:
+            return
+        paused = False
+        if mode == "pause" and c.view().get("state") == "printing":
+            try:
+                await c.command("pause")
+                paused = True
+            except Exception as e:
+                log.warning("AI: couldn't pause printer %s: %s", pid, e)
+        nice = label.replace("_", " ")
+        self._broadcast("event", {"id": pid, "event": "ai_failure", "name": row["name"],
+                                  "label": label, "score": score, "paused": paused})
+        if row.get("notify") == 0 or not self.notifier.enabled:
+            return
+        v = self.view(pid)
+        title = f"{row['name']}: possible {nice} ({score * 100:.0f}%)"
+        parts = [v.get("filename") or "unknown file", f"{v['progress'] * 100:.0f}% done",
+                 "print paused - check it and resume or cancel" if paused else "check the print"]
+        await self.notifier.send(title, " · ".join(parts), image)
 
     def _on_gcode(self, client: MoonrakerClient, line: str):
         if client.id in self.rows:

@@ -22,6 +22,8 @@ from .notify import ALL_EVENTS, PROGRESS_STEPS, SERVICES, Notifier, advanced as 
 from .store import Store
 from . import timelapse as tl
 from .timelapse import Timelapse
+from . import ai as ai_mod
+from .ai import AI
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 STATIC = Path(__file__).parent / "static"
@@ -30,6 +32,8 @@ store = Store(os.getenv("DB_PATH", "data/monitor.db"))
 manager = Manager(store, Notifier(store))
 manager.timelapse = Timelapse(store, os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db"))),
                               manager.snapshot, manager.cam_transform)
+manager.ai = AI(store, os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db"))),
+                manager.snapshot, manager.cam_transform, manager.ai_mode, manager.ai_alert, manager.ai_update)
 scan_lock = asyncio.Lock()
 
 
@@ -115,9 +119,13 @@ async def update_printer(request: Request):
     if pid is None:
         return err("not found", 404)
     b = await body(request)
+    if "ai" in b:
+        if b["ai"] not in ai_mod.MODES:
+            return err(f"ai must be one of: {', '.join(ai_mod.MODES)}")
+        manager.set_ai_mode(pid, b["ai"])
     if "notify" in b:
         manager.set_notify(pid, bool(b["notify"]))
-    if "name" not in b and "group" not in b and "camera" not in b and "notify" not in b:
+    if not any(k in b for k in ("name", "group", "camera", "notify", "ai")):
         return err("nothing to change")
     if "camera" in b:
         c = b.get("camera")
@@ -223,6 +231,25 @@ async def live_stream(request: Request):
 
     return StreamingResponse(relay(), media_type=upstream.headers.get("content-type", "multipart/x-mixed-replace"),
                              headers={"Cache-Control": "no-store"})
+
+
+async def ai_settings(request: Request):
+    if request.method == "PUT":
+        b = await body(request)
+        values = {}
+        for k, choices in ai_mod.CHOICES.items():
+            if k in b:
+                if b[k] not in choices:
+                    return err(f"bad value for {k}")
+                values[k] = b[k]
+        store.save_settings(values)
+    return JSONResponse({**manager.ai.settings(), "choices": ai_mod.CHOICES, "modes": ai_mod.MODES,
+                         "model": manager.ai.info()})
+
+
+async def ai_reload(request: Request):
+    await asyncio.to_thread(manager.ai.load)
+    return JSONResponse(manager.ai.info())
 
 
 async def timelapse_settings(request: Request):
@@ -596,7 +623,7 @@ SETUP = {
     "notify": ("PB_NOTIFY", ("basic", "advanced")),
     "remote": ("PB_REMOTE", ("off", "on")),
 }
-BUILT = {"ui.basic", "ui.advanced", "ai.off", "video.snapshots", "notify.basic", "notify.advanced", "video.live", "video.timelapse", "remote.off", "remote.on"}
+BUILT = {"ui.basic", "ui.advanced", "ai.off", "ai.basic", "video.snapshots", "notify.basic", "notify.advanced", "video.live", "video.timelapse", "remote.off", "remote.on"}
 
 
 def setup() -> dict:
@@ -621,8 +648,10 @@ async def health(request: Request):
 
 @contextlib.asynccontextmanager
 async def lifespan(app):
+    await asyncio.to_thread(manager.ai.load)
     await manager.start()
     yield
+    await manager.ai.stop()
     await manager.stop()
 
 
@@ -665,6 +694,8 @@ _app = Starlette(routes=[
     Route("/share/printer/{pid:int}/{code}/snapshot", share_snapshot),
     Route("/share/printer/{pid:int}/{code}/stream", share_stream),
     Route("/api/timelapse/settings", timelapse_settings, methods=["GET", "PUT"]),
+    Route("/api/ai/settings", ai_settings, methods=["GET", "PUT"]),
+    Route("/api/ai/reload", ai_reload, methods=["POST"]),
     Route("/api/printers/{pid:int}/timelapses", list_timelapses),
     Route("/api/printers/{pid:int}/timelapses/{tid}.mp4", timelapse_video),
     Route("/api/printers/{pid:int}/timelapses/{tid}", delete_timelapse, methods=["DELETE"]),

@@ -1,7 +1,7 @@
 # Printer Buddy AI - failure detection
 
-> **Status:** the model is trained and published. Hooking it into Printer Buddy
-> (scoring, alerts, pause, installer download) is being built now.
+> **Status:** live. Pick **AI detection: basic** in `./install.sh` (needs a 64-bit system) and the installer
+> downloads the newest model by itself. **3) Update** fetches newer models.
 
 Printer Buddy can watch your printer's camera and catch failed prints. While a printer is printing,
 it scores each snapshot for these problems (0-100% each, several can be high at once):
@@ -31,7 +31,45 @@ Each release has two files:
 - `printer-buddy-basic.onnx` - the model (about 17 MB)
 - `model.json` - labels, image size, default threshold, test results and a sha256 checksum
 
-Once the app side is built, the installer will download the model for you when you pick **AI detection: basic**.
+The installer downloads the newest one for you when you pick **AI detection: basic**.
+
+## How it watches
+
+- While a printer is **printing**, it checks the camera every 10 seconds. When it isn't printing, it doesn't watch,
+  and the printer page says so.
+- It alerts when an alert label scores **60% or more for 3 checks in a row** (about 30 seconds), then waits
+  **10 minutes** before alerting again. All of these can be changed under **AI** in the dashboard.
+- Each printer has its own mode in its menu and on its page: **Alert only** (default), **Alert + auto-pause**, or **Off**.
+- **Check now** on a printer's page scores the camera once, any time, without alerting or pausing. Handy for testing.
+- The AI judges what the camera sees: point it at **the print on the bed**, not just the nozzle.
+
+## Help improve the AI (optional, off by default)
+
+The next model learns from real printers. Printer Buddy keeps a few labelled photos **on your box**:
+
+- after an alert it asks **"Was it really a failure?"** (and if yes, **how bad, 1-10**)
+- 3 snapshots per print (10%, 50%, 90%), which become **OK** when the print finishes
+- the last snapshot of a failed or cancelled print, for you to label
+- anything you save yourself with **Save for AI…** on a printer's page
+
+You can see, label and delete all of them under **AI > Photos for AI**. **Nothing leaves your box** unless you tick
+**Help improve the AI**. If you do:
+
+- only **labelled** photos are sent, one at a time, at most 50 a day
+- each is shrunk to 640 px and re-saved, so no location or camera details
+- sent with your **box number** (the random ID in your share links), the label, how bad it was, and what the AI scored
+  at the time; **not** your name, address or printer list (your internet address is only used to count the daily
+  limit for 2 days and is never stored with the photo)
+- they go to a **private** dataset used only to train Printer Buddy's AI models
+- once sent, the photo is deleted from your box; untick the box any time and nothing more is sent
+
+Photos show whatever your printer camera sees, so keep people and private things out of its view.
+
+## Was it right?
+
+Every labelled photo records whether the AI got it right: **right**, **false alarm** (it flagged a problem, you said
+OK) or **missed** (it said OK, you labelled a failure). **AI > Photos for AI** shows the score on your printers,
+e.g. *basic-v1 on your printers: 47 right · 2 false alarms · 1 missed (94% right)*.
 
 ## Current model: `basic-v1`
 
@@ -90,6 +128,16 @@ nothing here is endorsed by the original authors.
 | [3D printing errors](https://www.kaggle.com/datasets/nimbus200/3d-printing-errors) | nimbus200 (Kaggle) | see dataset page | 2,000 (of 17,883) |
 
 "Images used" is before duplicates were removed. Several sets share images, so the final dataset is smaller.
+
+### Added for the next model (`basic-v2`)
+
+| Dataset | Author | License |
+|---|---|---|
+| [3D FDM faults detection](https://universe.roboflow.com/wangdada/3d_fdm_faults_detection-krkkr) | wangdada (Roboflow) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
+| [3Dprinting](https://universe.roboflow.com/hnnm/3dprinting-32nsa) | hnnm (Roboflow) | Public Domain |
+| [KS1 full dataset](https://github.com/mann1x/anycubic/releases/tag/datasets%2Fks1-full) | mann1x (Anycubic Kobra S1 camera, from BigEdge-FDM-Models) | none stated - credited here; ask the author before a model trained on it is released |
+
+Plus photos shared by Printer Buddy users through **Help improve the AI**.
 
 ### Ideas
 

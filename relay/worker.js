@@ -226,7 +226,8 @@ async function tunnelApi(request, env, ctx, url) {
 // A box that opted in ("Help improve the AI") sends one labelled photo:
 //   POST /api/contribute  {"id": "1234567", "label": "spaghetti", "source": "alert_yes",
 //                          "image": "<base64 JPEG>", "meta": {"model": "basic-v1", "score": 0.87, ...}}
-// The Worker commits it to the private data repo as photos/<label>/<id>-<time>-<source>-<score>.jpg
+// The Worker commits it to the private data repo as incoming/<label>/<id>-<time>-<source>-<score>-...jpg
+// (you review it and move the good ones to photos/, which is what training uses)
 // (full details in the commit message). Boxes never get any GitHub access themselves.
 //
 // Needs: secret GITHUB_TOKEN (fine-grained, Contents: Read and write on the data repo only),
@@ -269,7 +270,7 @@ async function contributeApi(request, env) {
   const score = Number.isFinite(Number(meta.score)) ? Math.round(Number(meta.score) * 100) : "na";
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");      // 20261019T211429
   const rand = Math.random().toString(36).slice(2, 6);
-  const path = `photos/${label}/${id}-${stamp}-${source}-${score}-${verdict}-s${sev ?? "na"}-${rand}.jpg`;
+  const path = `incoming/${label}/${id}-${stamp}-${source}-${score}-${verdict}-s${sev ?? "na"}-${rand}.jpg`;
   const message = `${label} from box ${id} (${source}, AI ${verdict.replace("_", " ")})\n\n` +
                   JSON.stringify({ id, label, source, verdict, severity: sev, meta }).slice(0, 4000);
 

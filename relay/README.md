@@ -77,7 +77,9 @@ curl -s -X DELETE https://www.printerbuddy.stream/api/tunnel -H 'content-type: a
 ## Training photos (`/api/contribute`)
 
 Boxes whose owner ticked **Help improve the AI** send labelled camera photos here. The Worker commits each one to a
-**private GitHub repo** as `photos/<label>/<box>-<time>-<source>-<score>.jpg` (details in the commit message).
+**private GitHub repo** as `incoming/<label>/<box>-<time>-<source>-<score>-<verdict>-s<how bad>-xxxx.jpg`
+(details in the commit message). **Review them:** move the good ones to `photos/<label>/` (fix the label folder if
+it's wrong), delete junk. Only `photos/` is used for training.
 Boxes never get GitHub access; only the Worker holds the token. Limits: 50 photos per box and 200 per network per day.
 
 ### Setup (once)
@@ -107,7 +109,7 @@ curl -s -X POST https://www.printerbuddy.stream/api/contribute -H 'content-type:
   -d "{\"id\": \"1234567\", \"label\": \"ok\", \"source\": \"user\", \"image\": \"$(base64 -w0 some-photo.jpg)\"}"
 ```
 
-Expected: `{"ok": true, "path": "photos/ok/1234567-...jpg"}`. Labels: `ok, spaghetti, warping, first_layer, failure, stringing, blob, crack`.
+Expected: `{"ok": true, "path": "incoming/ok/1234567-...jpg"}`. Labels: `ok, spaghetti, warping, first_layer, failure, stringing, blob, crack`.
 
 ### Was the AI right?
 

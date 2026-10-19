@@ -16,7 +16,7 @@ from starlette.routing import Route
 
 from . import discovery
 from .manager import Manager
-from .net import http_get
+from .net import http_get, http_stream
 from .notify import ALL_EVENTS, PROGRESS_STEPS, SERVICES, Notifier, advanced as notify_advanced
 from .store import Store
 
@@ -185,6 +185,39 @@ async def snapshot(request: Request):
         return err(f"webcam returned {status}", 502)
     return Response(data, media_type=headers.get("content-type", "image/jpeg"),
                     headers={"Cache-Control": "no-store"})
+
+
+async def live_stream(request: Request):
+    """Live MJPEG from the printer's camera, passed through this box."""
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    if setup()["video"] not in ("live", "timelapse"):
+        return err("live video is off (installer: Video)", 404)
+    try:
+        cam = int(request.query_params.get("cam", 0))
+    except ValueError:
+        return err("bad camera number")
+    url = manager.clients[pid].stream_url(cam)
+    if not url or not url.startswith("http://"):
+        return err("this camera has no MJPEG stream", 404)
+    try:
+        upstream = await http_stream(url)
+    except Exception as e:
+        return err(f"camera unreachable: {e}", 502)
+    if upstream.status != 200:
+        upstream.close()
+        return err(f"camera returned {upstream.status}", 502)
+
+    async def relay():
+        try:
+            async for chunk in upstream.chunks():
+                yield chunk
+        finally:
+            upstream.close()
+
+    return StreamingResponse(relay(), media_type=upstream.headers.get("content-type", "multipart/x-mixed-replace"),
+                             headers={"Cache-Control": "no-store"})
 
 
 async def printer_action(request: Request):
@@ -408,7 +441,7 @@ SETUP = {
     "remote": ("PB_REMOTE", ("off", "on")),
     "users": ("PB_USERS", ("single", "multi")),
 }
-BUILT = {"ui.basic", "ui.advanced", "ai.off", "video.snapshots", "notify.basic", "notify.advanced", "remote.off", "users.single"}
+BUILT = {"ui.basic", "ui.advanced", "ai.off", "video.snapshots", "notify.basic", "notify.advanced", "video.live", "remote.off", "users.single"}
 
 
 def setup() -> dict:
@@ -450,6 +483,7 @@ app = Starlette(routes=[
     Route("/api/printers/{pid:int}", update_printer, methods=["PATCH"]),
     Route("/api/printers/{pid:int}", delete_printer, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/snapshot", snapshot),
+    Route("/api/printers/{pid:int}/stream", live_stream),
     Route("/api/printers/{pid:int}/gcode", printer_gcode, methods=["POST"]),
     Route("/api/printers/{pid:int}/files", list_files),
     Route("/api/printers/{pid:int}/history", history),

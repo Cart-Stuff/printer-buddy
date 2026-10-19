@@ -99,6 +99,45 @@ async def http_post(url: str, body: bytes, headers: dict[str, str] | None = None
     return await asyncio.wait_for(_request("POST", url, headers or {}, max_bytes, body), timeout)
 
 
+class HTTPStream:
+    """An open streaming GET (e.g. an MJPEG camera). Iterate .chunks(); always close()."""
+
+    def __init__(self, status: int, headers: dict[str, str], reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        self.status, self.headers, self._r, self._w = status, headers, reader, writer
+
+    async def chunks(self, size: int = 65536):
+        chunked = self.headers.get("transfer-encoding", "").lower() == "chunked"
+        while True:
+            if chunked:
+                n = int((await self._r.readline()).split(b";")[0].strip() or b"0", 16)
+                if n == 0:
+                    return
+                data = await self._r.readexactly(n)
+                await self._r.readexactly(2)
+            else:
+                data = await self._r.read(size)
+                if not data:
+                    return
+            yield data
+
+    def close(self):
+        self._w.close()
+
+
+async def http_stream(url: str, headers: dict[str, str] | None = None, timeout: float = 8.0) -> HTTPStream:
+    host, port, path, host_hdr = _split(url, ("http",))
+    reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
+    try:
+        hdrs = {"Host": host_hdr, "Connection": "close", "User-Agent": UA, "Accept": "*/*", **(headers or {})}
+        writer.write((f"GET {path} HTTP/1.1\r\n" + "".join(f"{k}: {v}\r\n" for k, v in hdrs.items()) + "\r\n").encode("latin-1"))
+        await writer.drain()
+        status, rh = await asyncio.wait_for(_read_headers(reader), timeout)
+    except Exception:
+        writer.close()
+        raise
+    return HTTPStream(status, rh, reader, writer)
+
+
 async def get_json(url: str, headers: dict[str, str] | None = None, timeout: float = 5.0):
     """Returns (status, parsed_json_or_None)."""
     status, _, body = await http_get(url, headers, timeout, max_bytes=2_000_000)

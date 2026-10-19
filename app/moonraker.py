@@ -309,6 +309,27 @@ class MoonrakerClient:
         # relative URLs are served by the web frontend (Mainsail/Fluidd nginx), not Moonraker's port
         return f"http://{self.host}{url if url.startswith('/') else '/' + url}"
 
+    def _abs(self, url: str) -> str:
+        if url.startswith(("http://", "https://")):
+            return url
+        return f"http://{self.host}{url if url.startswith('/') else '/' + url}"
+
+    @staticmethod
+    def _is_mjpeg(cam: dict) -> bool:
+        service = (cam.get("service") or "").lower()
+        url = (cam.get("stream_url") or "").lower()
+        if not url or any(x in service for x in ("webrtc", "hls", "iframe")):
+            return False
+        return service.startswith(("mjpegstreamer", "uv4l-mjpeg", "ipstream")) or "action=stream" in url or service == ""
+
+    def stream_url(self, index: int = 0) -> str | None:
+        """MJPEG stream URL of a camera, or None if it has none (e.g. WebRTC-only)."""
+        cams = self._snap_cams()
+        if not cams:
+            return None
+        cam = cams[min(max(index, 0), len(cams) - 1)]
+        return self._abs(cam["stream_url"]) if self._is_mjpeg(cam) else None
+
     def cams_info(self) -> list[dict]:
         """Name / flip / rotation / fps of each camera, as configured in Moonraker."""
         out = []
@@ -318,7 +339,8 @@ class MoonrakerClient:
             except (TypeError, ValueError):
                 rotation = 0
             out.append({"name": cam.get("name") or f"Camera {i + 1}", "flip_h": bool(cam.get("flip_horizontal")),
-                        "flip_v": bool(cam.get("flip_vertical")), "rotation": rotation, "target_fps": cam.get("target_fps")})
+                        "flip_v": bool(cam.get("flip_vertical")), "rotation": rotation, "target_fps": cam.get("target_fps"),
+                        "live": self._is_mjpeg(cam)})
         return out
 
     def view(self) -> dict:

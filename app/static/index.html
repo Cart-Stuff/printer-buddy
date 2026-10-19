@@ -732,8 +732,54 @@ function showFps(img, st, cfg) {
   const fps = span > 0 ? (n - 1) / span : null;
   badge.textContent = (fps ? `${fps < 1 ? fps.toFixed(1) : Math.round(fps)} fps` : "— fps") + (cfg.target ? ` · cam ${cfg.target}` : "");
 }
+// ---- live MJPEG (installer: Video live/timelapse) — big views only; cards stay on snapshots
+const liveStreams = new Map();   // img -> { pid, idx, ctrl }
+const liveOn = () => SETUP.video === "live" || SETUP.video === "timelapse";
+function stopLive(img) {
+  const s = liveStreams.get(img); if (!s) return;
+  s.ctrl.abort(); liveStreams.delete(img);
+}
+async function startLive(img, pid, idx, st) {
+  const ctrl = new AbortController();
+  liveStreams.set(img, { pid, idx, ctrl });
+  let prevUrl = null;
+  try {
+    const r = await fetch(`/api/printers/${pid}/stream?cam=${idx}`, { signal: ctrl.signal, cache: "no-store" });
+    if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
+    const reader = r.body.getReader();
+    let buf = new Uint8Array(0);
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const merged = new Uint8Array(buf.length + value.length); merged.set(buf); merged.set(value, buf.length); buf = merged;
+      // cut out complete JPEGs (FF D8 ... FF D9); keep only the newest one
+      let frame = null;
+      while (true) {
+        let soi = -1; for (let i = 0; i + 1 < buf.length; i++) if (buf[i] === 0xFF && buf[i + 1] === 0xD8) { soi = i; break; }
+        if (soi < 0) { buf = buf.slice(Math.max(0, buf.length - 1)); break; }
+        let eoi = -1; for (let i = soi + 2; i + 1 < buf.length; i++) if (buf[i] === 0xFF && buf[i + 1] === 0xD9) { eoi = i + 2; break; }
+        if (eoi < 0) { buf = buf.slice(soi); break; }
+        frame = buf.slice(soi, eoi); buf = buf.slice(eoi);
+        st.frames.push(performance.now());
+      }
+      if (frame) {
+        const url = URL.createObjectURL(new Blob([frame], { type: "image/jpeg" }));
+        img.src = url; if (prevUrl) URL.revokeObjectURL(prevUrl); prevUrl = url;
+      }
+      if (buf.length > 8_000_000) buf = new Uint8Array(0);   // runaway guard
+    }
+  } catch (e) { if (ctrl.signal.aborted) return; }
+  finally { if (prevUrl) setTimeout(() => URL.revokeObjectURL(prevUrl), 2000); }
+  // stream ended or failed: fall back to snapshots for a while, then try again
+  if (liveStreams.get(img)?.ctrl === ctrl) liveStreams.delete(img);
+  st.liveRetry = performance.now() + 10000;
+}
+
 function camTick() {
-  if (document.hidden) return;
+  if (document.hidden) { for (const img of [...liveStreams.keys()]) stopLive(img); return; }
+  for (const [img, s] of [...liveStreams]) {   // stop streams that went off screen or changed camera
+    if (!img.isConnected || !img.offsetParent || +img.dataset.camPid !== s.pid || +(img.dataset.camIdx || 0) !== s.idx) stopLive(img);
+  }
   const now = performance.now();
   for (const img of document.querySelectorAll("img[data-cam-pid]")) {
     const pid = +img.dataset.camPid, p = printers.get(pid);
@@ -743,6 +789,12 @@ function camTick() {
     let st = camState.get(img);
     if (!st || st.pid !== pid || st.idx !== idx) { st = { pid, idx, last: 0, loading: false, frames: [] }; camState.set(img, st); }
     applyCamTransform(img, cfg);
+    const wantLive = liveOn() && img.dataset.camKind === "big" && p.cams?.[idx]?.live && !(st.liveRetry > now);
+    if (wantLive) {
+      if (!liveStreams.has(img)) startLive(img, pid, idx, st);
+      showFps(img, st, cfg); continue;
+    }
+    if (liveStreams.has(img)) stopLive(img);
     if (!st.loading && now - st.last >= every) {
       st.loading = true; st.last = now;
       img.onload = () => { st.loading = false; st.frames.push(performance.now()); showFps(img, st, cfg); };

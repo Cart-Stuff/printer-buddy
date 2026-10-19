@@ -31,6 +31,7 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === "/api/tunnel") return tunnelApi(request, env, ctx, url);
+    if (url.pathname === "/api/contribute") return contributeApi(request, env);
     const m = url.pathname.match(SHARE);
     if (!m) {
       if (url.pathname === "/") return page("Printer Buddy", "Self-hosted 3D printer monitoring. Open a share link to watch a printer.", 200);
@@ -213,4 +214,74 @@ async function tunnelApi(request, env, ctx, url) {
   } catch (e) {
     return json({ error: `Cloudflare said: ${e.message}` }, 502);
   }
+}
+
+// ---------------------------------------------------------------- AI training photos
+// A box that opted in ("Help improve the AI") sends one labelled photo:
+//   POST /api/contribute  {"id": "1234567", "label": "spaghetti", "source": "alert_yes",
+//                          "image": "<base64 JPEG>", "meta": {"model": "basic-v1", "score": 0.87, ...}}
+// The Worker commits it to the private data repo as photos/<label>/<id>-<time>-<source>-<score>.jpg
+// (full details in the commit message). Boxes never get any GitHub access themselves.
+//
+// Needs: secret GITHUB_TOKEN (fine-grained, Contents: Read and write on the data repo only),
+// variable DATA_REPO (e.g. sterling5241/printer-buddy-data); optional CONTRIB_PER_BOX_PER_DAY (default 50),
+// CONTRIB_PER_IP_PER_DAY (default 200). Uses the same BOXES KV for the daily counters.
+
+const LABELS = ["ok", "spaghetti", "warping", "first_layer", "failure", "stringing", "blob", "crack"];
+const SOURCES = ["alert_yes", "alert_no", "print_ok", "print_failed", "user"];
+
+async function contributeApi(request, env) {
+  if (!env.GITHUB_TOKEN || !env.DATA_REPO || !env.BOXES) return json({ error: "Photo sharing isn't set up on this server yet." }, 503);
+  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  let b;
+  try { b = await request.json(); } catch { return json({ error: "Bad request" }, 400); }
+  const id = String(b.id || ""), label = String(b.label || ""), source = String(b.source || "user");
+  if (!/^\d{6,10}$/.test(id)) return json({ error: "Bad Printer Buddy ID" }, 400);
+  if (!LABELS.includes(label)) return json({ error: `label must be one of: ${LABELS.join(", ")}` }, 400);
+  if (!SOURCES.includes(source)) return json({ error: "Bad source" }, 400);
+
+  let bytes;
+  try { bytes = Uint8Array.from(atob(String(b.image || "")), c => c.charCodeAt(0)); }
+  catch { return json({ error: "image must be base64" }, 400); }
+  if (bytes.length < 1000 || bytes.length > 500_000) return json({ error: "image must be 1-500 KB" }, 400);
+  if (bytes[0] !== 0xFF || bytes[1] !== 0xD8) return json({ error: "image must be a JPEG" }, 400);
+
+  // daily limits
+  const day = new Date().toISOString().slice(0, 10);
+  const ip = request.headers.get("cf-connecting-ip") || "unknown";
+  const boxKey = `contrib:box:${id}:${day}`, ipKey = `contrib:ip:${ip}:${day}`;
+  const [nBox, nIp] = await Promise.all([env.BOXES.get(boxKey), env.BOXES.get(ipKey)]).then(v => v.map(x => Number(x || 0)));
+  if (nBox >= Number(env.CONTRIB_PER_BOX_PER_DAY || 50) || nIp >= Number(env.CONTRIB_PER_IP_PER_DAY || 200)) {
+    return json({ error: "Daily photo limit reached. The rest will be sent tomorrow." }, 429);
+  }
+
+  const meta = (b.meta && typeof b.meta === "object") ? b.meta : {};
+  const score = Number.isFinite(Number(meta.score)) ? Math.round(Number(meta.score) * 100) : "na";
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");      // 20261019T211429
+  const rand = Math.random().toString(36).slice(2, 6);
+  const path = `photos/${label}/${id}-${stamp}-${source}-${score}-${rand}.jpg`;
+  const message = `${label} from box ${id} (${source})\n\n` + JSON.stringify({ id, label, source, meta }).slice(0, 4000);
+
+  const api = `https://api.github.com/repos/${env.DATA_REPO}/contents/${path}`;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await fetch(api, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${env.GITHUB_TOKEN}`, accept: "application/vnd.github+json",
+                 "user-agent": "printer-buddy-worker", "content-type": "application/json" },
+      body: JSON.stringify({ message, content: String(b.image) }),
+    });
+    if (r.status === 201 || r.status === 200) {
+      await Promise.all([
+        env.BOXES.put(boxKey, String(nBox + 1), { expirationTtl: 2 * 24 * 3600 }),
+        env.BOXES.put(ipKey, String(nIp + 1), { expirationTtl: 2 * 24 * 3600 }),
+      ]);
+      return json({ ok: true, path }, 201);
+    }
+    if (r.status !== 409) {   // 409 = someone else committed at the same moment: try again
+      const t = await r.text();
+      return json({ error: `GitHub said ${r.status}: ${t.slice(0, 200)}` }, 502);
+    }
+    await new Promise(res => setTimeout(res, 300 * (attempt + 1)));
+  }
+  return json({ error: "GitHub was busy, try again later" }, 503);
 }

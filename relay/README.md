@@ -67,6 +67,41 @@ curl -s -X DELETE https://www.printerbuddy.stream/api/tunnel -H 'content-type: a
 | `This Printer Buddy ID is already set up on another box` | that ID has a tunnel and the key didn't match |
 | `The tunnel is still connected` (on DELETE) | stop cloudflared on that box, wait a minute, try again |
 
+## Training photos (`/api/contribute`)
+
+Boxes whose owner ticked **Help improve the AI** send labelled camera photos here. The Worker commits each one to a
+**private GitHub repo** as `photos/<label>/<box>-<time>-<source>-<score>.jpg` (details in the commit message).
+Boxes never get GitHub access; only the Worker holds the token. Limits: 50 photos per box and 200 per network per day.
+
+### Setup (once)
+
+1. **Make the repo:** GitHub > New repository > name `printer-buddy-data`, **Private**, tick "Add a README" (the repo must not be empty).
+2. **Make a token for the Worker:** GitHub > Settings > Developer settings > Fine-grained tokens > Generate new token
+   - Repository access: **Only select repositories > printer-buddy-data**
+   - Permissions: **Contents: Read and write** (nothing else)
+   - Copy the token.
+3. **Worker > Settings > Variables and Secrets:**
+
+| Type | Name | Value |
+|---|---|---|
+| Secret | `GITHUB_TOKEN` | the token from step 2 |
+| Text | `DATA_REPO` | `sterling5241/printer-buddy-data` |
+| optional (Text) | `CONTRIB_PER_BOX_PER_DAY` | default `50` |
+| optional (Text) | `CONTRIB_PER_IP_PER_DAY` | default `200` |
+
+Deploy. It uses the same `BOXES` KV binding for its daily counters.
+
+### Test it
+
+Commits a real photo to the data repo (delete it there afterwards):
+
+```bash
+curl -s -X POST https://www.printerbuddy.stream/api/contribute -H 'content-type: application/json' \
+  -d "{\"id\": \"1234567\", \"label\": \"ok\", \"source\": \"user\", \"image\": \"$(base64 -w0 some-photo.jpg)\"}"
+```
+
+Expected: `{"ok": true, "path": "photos/ok/1234567-...jpg"}`. Labels: `ok, spaghetti, warping, first_layer, failure, stringing, blob, crack`.
+
 ## On a box
 
 `./install.sh` > **9) Remote / share links** > **1) Set up automatically**. That's all.

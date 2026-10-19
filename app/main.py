@@ -156,6 +156,79 @@ async def printer_action(request: Request):
     return JSONResponse({"ok": True})
 
 
+GCODE_EXT = (".gcode", ".gco", ".g")
+MAX_UPLOAD = 1024 * 1024 * 1024  # 1 GB
+
+
+def _online_client(request: Request):
+    pid = _pid(request)
+    if pid is None:
+        return None, err("not found", 404)
+    client = manager.clients[pid]
+    if client.connection != "online":
+        return None, err("printer is offline", 409)
+    return client, None
+
+
+async def list_files(request: Request):
+    client, e = _online_client(request)
+    if e:
+        return e
+    try:
+        return JSONResponse({"files": await client.list_files()})
+    except Exception as ex:
+        return err(str(ex) or type(ex).__name__, 502)
+
+
+async def print_file(request: Request):
+    client, e = _online_client(request)
+    if e:
+        return e
+    name = str((await body(request)).get("path", "")).strip()
+    if not name:
+        return err("path is required")
+    try:
+        await client.start_print(name)
+    except Exception as ex:
+        return err(str(ex) or type(ex).__name__, 502)
+    return JSONResponse({"ok": True})
+
+
+async def delete_file(request: Request):
+    client, e = _online_client(request)
+    if e:
+        return e
+    name = request.query_params.get("path", "").strip()
+    if not name or ".." in name.split("/"):
+        return err("bad path")
+    try:
+        await client.delete_file(name)
+    except Exception as ex:
+        return err(str(ex) or type(ex).__name__, 502)
+    return Response(status_code=204)
+
+
+async def upload_file(request: Request):
+    client, e = _online_client(request)
+    if e:
+        return e
+    name = request.query_params.get("name", "").replace("\\", "/").split("/")[-1].strip()
+    if not name or not name.lower().endswith(GCODE_EXT) or '"' in name:
+        return err("pick a .gcode file")
+    data = bytearray()
+    async for chunk in request.stream():
+        data += chunk
+        if len(data) > MAX_UPLOAD:
+            return err("file is too big (1 GB max)", 413)
+    if not data:
+        return err("the file is empty")
+    try:
+        await client.upload(name, bytes(data), start=request.query_params.get("print") == "1")
+    except Exception as ex:
+        return err(str(ex) or type(ex).__name__, 502)
+    return JSONResponse({"ok": True, "name": name})
+
+
 async def printer_gcode(request: Request):
     pid = _pid(request)
     if pid is None:
@@ -222,6 +295,10 @@ app = Starlette(routes=[
     Route("/api/printers/{pid:int}", delete_printer, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/snapshot", snapshot),
     Route("/api/printers/{pid:int}/gcode", printer_gcode, methods=["POST"]),
+    Route("/api/printers/{pid:int}/files", list_files),
+    Route("/api/printers/{pid:int}/files", delete_file, methods=["DELETE"]),
+    Route("/api/printers/{pid:int}/files/print", print_file, methods=["POST"]),
+    Route("/api/printers/{pid:int}/files/upload", upload_file, methods=["POST"]),
     Route("/api/printers/{pid:int}/{action}", printer_action, methods=["POST"]),
     Route("/api/events", events),
     Route("/api/notify/test", test_notification, methods=["POST"]),

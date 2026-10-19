@@ -51,13 +51,17 @@ async def _read_headers(reader: asyncio.StreamReader) -> tuple[int, dict[str, st
     return status, headers
 
 
-async def _get(url: str, headers: dict[str, str], max_bytes: int):
+async def _request(method: str, url: str, headers: dict[str, str], max_bytes: int, body: bytes | None = None):
     host, port, path, host_hdr = _split(url, ("http",))
     reader, writer = await asyncio.open_connection(host, port)
     try:
         hdrs = {"Host": host_hdr, "Connection": "close", "User-Agent": UA, "Accept": "*/*", **headers}
-        req = f"GET {path} HTTP/1.1\r\n" + "".join(f"{k}: {v}\r\n" for k, v in hdrs.items()) + "\r\n"
+        if body is not None:
+            hdrs["Content-Length"] = str(len(body))
+        req = f"{method} {path} HTTP/1.1\r\n" + "".join(f"{k}: {v}\r\n" for k, v in hdrs.items()) + "\r\n"
         writer.write(req.encode("latin-1"))
+        if body:
+            writer.write(body)
         await writer.drain()
         status, rh = await _read_headers(reader)
         body = bytearray()
@@ -87,7 +91,12 @@ async def _get(url: str, headers: dict[str, str], max_bytes: int):
 
 async def http_get(url: str, headers: dict[str, str] | None = None, timeout: float = 5.0,
                    max_bytes: int = 10_000_000) -> tuple[int, dict[str, str], bytes]:
-    return await asyncio.wait_for(_get(url, headers or {}, max_bytes), timeout)
+    return await asyncio.wait_for(_request("GET", url, headers or {}, max_bytes), timeout)
+
+
+async def http_post(url: str, body: bytes, headers: dict[str, str] | None = None, timeout: float = 300.0,
+                    max_bytes: int = 2_000_000) -> tuple[int, dict[str, str], bytes]:
+    return await asyncio.wait_for(_request("POST", url, headers or {}, max_bytes, body), timeout)
 
 
 async def get_json(url: str, headers: dict[str, str] | None = None, timeout: float = 5.0):

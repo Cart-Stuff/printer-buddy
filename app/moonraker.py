@@ -8,7 +8,9 @@ import logging
 import time
 from typing import Callable
 
-from .net import HandshakeError, WebSocket, get_json
+import uuid
+
+from .net import HandshakeError, WebSocket, get_json, http_post
 
 log = logging.getLogger(__name__)
 VERSION = "0.1.0"
@@ -225,6 +227,33 @@ class MoonrakerClient:
         methods = {"pause": "printer.print.pause", "resume": "printer.print.resume",
                    "cancel": "printer.print.cancel", "estop": "printer.emergency_stop"}
         return await self._call(methods[action], timeout=15)
+
+    async def list_files(self) -> list[dict]:
+        res = await self._call("server.files.list", {"root": "gcodes"})
+        files = [{"path": f.get("path") or f.get("filename"), "size": f.get("size"), "modified": f.get("modified")}
+                 for f in (res or []) if isinstance(f, dict)]
+        return sorted(files, key=lambda f: f["modified"] or 0, reverse=True)
+
+    async def start_print(self, path: str):
+        return await self._call("printer.print.start", {"filename": path}, timeout=30)
+
+    async def delete_file(self, path: str):
+        return await self._call("server.files.delete_file", {"path": f"gcodes/{path}"})
+
+    async def upload(self, filename: str, data: bytes, start: bool = False):
+        """Upload a G-code file to the printer's gcodes folder (Moonraker HTTP upload)."""
+        boundary = uuid.uuid4().hex
+        parts = [("root", "gcodes")] + ([("print", "true")] if start else [])
+        body = b"".join(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k, v in parts)
+        body += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+                 f'Content-Type: application/octet-stream\r\n\r\n').encode() + data + f"\r\n--{boundary}--\r\n".encode()
+        headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+        if self.api_key:
+            headers["X-Api-Key"] = self.api_key
+        status, _, resp = await http_post(f"http://{self.host}:{self.port}/server/files/upload", body, headers)
+        if status not in (200, 201):
+            raise RuntimeError(f"upload failed (HTTP {status}): {resp[:200].decode(errors='replace')}")
 
     async def gcode(self, script: str):
         """Run G-code; waits until Klipper finishes it (homing can take a while)."""

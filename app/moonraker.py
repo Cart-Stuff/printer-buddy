@@ -46,6 +46,7 @@ class MoonrakerClient:
                  on_change: Callable[["MoonrakerClient"], None]):
         self.id, self.host, self.port, self.api_key = printer_id, host, port, api_key
         self._on_change = on_change
+        self.on_gcode: Callable[["MoonrakerClient", str], None] | None = None
         self.connection = "connecting"  # connecting | online | offline | auth_error
         self.error: str | None = None
         self.klippy_state: str | None = None
@@ -191,6 +192,12 @@ class MoonrakerClient:
             self._set(klippy_state="shutdown")
         elif method == "notify_klippy_disconnected":
             self._set(klippy_state="disconnected")
+        elif method == "notify_gcode_response" and params:
+            if self.on_gcode:
+                try:
+                    self.on_gcode(self, str(params[0]))
+                except Exception:
+                    log.exception("on_gcode handler failed")
         elif method == "notify_webcams_changed":
             asyncio.create_task(self._safe(self._load_webcams()))
 

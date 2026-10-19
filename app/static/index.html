@@ -118,6 +118,17 @@
   .speed { display: flex; align-items: center; gap: 14px; }
   .speed input { flex-grow: 1; accent-color: var(--orange); min-height: 44px; border: 0; padding: 0; }
   .speed output { min-width: 56px; text-align: right; font-weight: 900; font-size: 18px; }
+  .con { border-radius: 12px; background: var(--card); border: 1px solid var(--line); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .con-log { height: 440px; overflow-y: auto; background: #0E0D11; border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+             font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .con-log .sent { color: var(--orange); }
+  .con-log .err { color: var(--red-text); }
+  .con-log .resp { color: var(--text); }
+  .con-log .empty { color: var(--muted); }
+  .con-quick { display: flex; flex-wrap: wrap; gap: 8px; }
+  .con-quick button { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 700; }
+  .con-form { display: flex; gap: 8px; }
+  .con-form input { flex-grow: 1; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   dialog#qv { width: min(980px, calc(100% - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 14px;
               background: var(--card); color: var(--text); }
   dialog#qv::backdrop { background: rgba(5,5,7,.88); }
@@ -187,6 +198,7 @@
   <div class="pg-tabs" role="tablist">
     <button role="tab" id="tabStatus" aria-selected="true" aria-controls="pgStatus">Status</button>
     <button role="tab" id="tabControl" aria-selected="false" aria-controls="pgControl">Control</button>
+    <button role="tab" id="tabConsole" aria-selected="false" aria-controls="pgConsole">Console</button>
   </div>
   <div class="pg-body" id="pgStatus" role="tabpanel" aria-labelledby="tabStatus">
     <div class="pg-cambox">
@@ -248,6 +260,19 @@
       <div class="speed"><input type="range" id="ctlSpeed" min="50" max="200" step="5" value="100" aria-label="Print speed percent"><output id="ctlSpeedOut">100%</output></div>
       <p class="note">Changes the print speed live (M220).</p>
     </section>
+  </div>
+
+  <div class="con" id="pgConsole" role="tabpanel" aria-labelledby="tabConsole" hidden>
+    <div class="con-log" id="conLog" role="log" aria-live="polite" aria-label="Klipper console"></div>
+    <div class="con-quick">
+      <button data-cmd="M115">M115</button><button data-cmd="QUERY_ENDSTOPS">QUERY_ENDSTOPS</button>
+      <button data-cmd="GET_POSITION">GET_POSITION</button><button data-cmd="HELP">HELP</button>
+      <button data-cmd="FIRMWARE_RESTART">FIRMWARE_RESTART</button>
+    </div>
+    <form class="con-form" id="conForm">
+      <input id="conInput" autocomplete="off" spellcheck="false" aria-label="G-code command" placeholder="Type G-code, e.g. G28 — Enter to send, ↑ for history">
+      <button class="primary">Send</button>
+    </form>
   </div>
 </section>
 
@@ -402,6 +427,7 @@ function connectEvents() {
   const es = new EventSource("/api/events");
   es.addEventListener("snapshot", e => { printers.clear(); for (const p of JSON.parse(e.data)) printers.set(p.id, p); render(); route(); });
   es.addEventListener("printer", e => { const p = JSON.parse(e.data); printers.set(p.id, p); render(); });
+  es.addEventListener("gcode", e => { const d = JSON.parse(e.data); conAdd(d.id, d.line.startsWith("!!") ? "err" : "resp", d.line); });
   es.addEventListener("removed", e => { printers.delete(JSON.parse(e.data).id); render(); });
   es.addEventListener("event", e => { const d = JSON.parse(e.data); toast(`${d.name}: print ${d.event}`); });
 }
@@ -517,6 +543,7 @@ function route() {
   $("main").hidden = pageId !== null;
   $("#page").hidden = pageId === null;
   $("#pgImg").removeAttribute("src");
+  showTab("status");
   renderPage(); refreshPageCam(); window.scrollTo(0, 0);
 }
 function refreshPageCam() {
@@ -556,6 +583,8 @@ function renderPage() {
   $("#pgCancel").disabled = !live || !active;
   $("#pgStop").disabled = !live;
   renderControl(p);
+  const conLive = p.connection === "online";
+  for (const el of $("#pgConsole").querySelectorAll("button, input")) el.disabled = !conLive;
 }
 $("#pgPause").onclick = () => doAction(pageId, printers.get(pageId)?.state === "paused" ? "resume" : "pause");
 $("#pgCancel").onclick = () => doAction(pageId, "cancel");
@@ -564,14 +593,58 @@ $("#pgFull").onclick = () => $("#pgCam").requestFullscreen?.();
 window.addEventListener("hashchange", route);
 
 // ---- printer page: Control tab -------------------------------------------------
+const TABS = { status: ["#tabStatus", "#pgStatus"], control: ["#tabControl", "#pgControl"], console: ["#tabConsole", "#pgConsole"] };
 function showTab(name) {
-  const ctl = name === "control";
-  $("#tabStatus").setAttribute("aria-selected", String(!ctl));
-  $("#tabControl").setAttribute("aria-selected", String(ctl));
-  $("#pgStatus").hidden = ctl; $("#pgControl").hidden = !ctl;
+  for (const [key, [tab, panel]] of Object.entries(TABS)) {
+    $(tab).setAttribute("aria-selected", String(key === name));
+    $(panel).hidden = key !== name;
+  }
+  if (name === "console") { drawConsole(); $("#conInput").focus(); }
 }
 $("#tabStatus").onclick = () => showTab("status");
 $("#tabControl").onclick = () => showTab("control");
+$("#tabConsole").onclick = () => showTab("console");
+
+// ---- printer page: Console tab -------------------------------------------------
+const conLogs = new Map();          // printer id -> [{kind, text}], kept since this page was opened
+const conHistory = [];
+let conHistPos = -1;
+function conAdd(id, kind, text) {
+  const log = conLogs.get(id) || [];
+  log.push({ kind, text });
+  if (log.length > 500) log.splice(0, log.length - 500);
+  conLogs.set(id, log);
+  if (id === pageId && !$("#pgConsole").hidden) {
+    const box = $("#conLog"), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    box.querySelector(".empty")?.remove();
+    const div = document.createElement("div"); div.className = kind; div.textContent = text; box.append(div);
+    if (atBottom) box.scrollTop = box.scrollHeight;
+  }
+}
+function drawConsole() {
+  const box = $("#conLog"), log = conLogs.get(pageId) || [];
+  box.innerHTML = log.length ? "" : `<div class="empty">Klipper's replies show up here. Nothing yet since this page was opened.</div>`;
+  for (const { kind, text } of log) { const div = document.createElement("div"); div.className = kind; div.textContent = text; box.append(div); }
+  box.scrollTop = box.scrollHeight;
+}
+async function conSend(cmd) {
+  cmd = cmd.trim(); if (!cmd || pageId === null) return;
+  const id = pageId;
+  if (conHistory[conHistory.length - 1] !== cmd) conHistory.push(cmd);
+  conHistPos = -1;
+  conAdd(id, "sent", `> ${cmd}`);
+  try { await api(`/api/printers/${id}/gcode`, { method: "POST", body: JSON.stringify({ script: cmd }) }); }
+  catch (e) { conAdd(id, "err", `!! ${e.message}`); }
+}
+$("#conForm").onsubmit = e => { e.preventDefault(); const v = $("#conInput").value; $("#conInput").value = ""; conSend(v); };
+$("#conInput").onkeydown = e => {
+  if (e.key !== "ArrowUp" && e.key !== "ArrowDown" || !conHistory.length) return;
+  e.preventDefault();
+  if (e.key === "ArrowUp") conHistPos = conHistPos === -1 ? conHistory.length - 1 : Math.max(0, conHistPos - 1);
+  else conHistPos = conHistPos === -1 ? -1 : conHistPos + 1 >= conHistory.length ? -1 : conHistPos + 1;
+  $("#conInput").value = conHistPos === -1 ? "" : conHistory[conHistPos];
+};
+for (const b of document.querySelectorAll("[data-cmd]")) b.onclick = () => conSend(b.dataset.cmd);
 let jogStep = 10, speedDragging = false;
 async function gcode(script) {
   const p = printers.get(pageId); if (!p) return;

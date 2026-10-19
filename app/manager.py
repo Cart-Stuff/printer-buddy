@@ -38,6 +38,7 @@ class Manager:
     def _spawn(self, row: dict):
         self.rows[row["id"]] = row
         c = MoonrakerClient(row["id"], row["host"], row["port"], row["api_key"], self._on_change)
+        c.on_gcode = self._on_gcode
         self.clients[row["id"]] = c
         c.start()
 
@@ -85,6 +86,10 @@ class Manager:
             if self.notifier.enabled and self.notifier.wants(event):
                 asyncio.get_running_loop().create_task(self._notify(event, v))
         self._broadcast("printer", v)
+
+    def _on_gcode(self, client: MoonrakerClient, line: str):
+        if client.id in self.rows:
+            self._broadcast("gcode", {"id": client.id, "line": line})
 
     async def _notify(self, event: str, v: dict):
         title = f"{v['name']}: print {event}"

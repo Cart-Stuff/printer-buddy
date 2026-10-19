@@ -4,6 +4,7 @@
 #   ./install.sh                         open the menu
 #   ./install.sh -y                      install/update with no questions (keeps current setup)
 #   ./install.sh --ui advanced --ai off  set parts and install with no menu
+#   ./install.sh -y --port 8081          install on a set port (must be free)
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE=printer-buddy
@@ -11,6 +12,8 @@ UNIT_FILE="/etc/systemd/system/$SERVICE.service"
 RUN_USER="${SUDO_USER:-$USER}"
 ENV_FILE="$DIR/printer-buddy.env"
 BACKUP_DIR="$DIR/backups"
+PORT_GIVEN=""     # from --port
+INTERACTIVE=0     # 1 when run from the menu
 
 # key|env var|name|choices (first one is the default)
 PARTS=(
@@ -69,6 +72,92 @@ service_state() {
 }
 url() { local ip port; ip=$(hostname -I 2>/dev/null | awk '{print $1}'); port="$(get_env PORT)"; echo "http://${ip:-<this-box>}:${port:-8080}"; }
 
+# ---------------------------------------------------------------- port
+current_port() { local p; p="$(get_env PORT)"; echo "${p:-8080}"; }
+valid_port() { [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1024 ] && [ "$1" -le 65535 ]; }
+port_owner() {   # prints what is listening on TCP port $1 (Printer Buddy itself doesn't count); fails if free
+  local p="$1" line pid name ours
+  ours="$(systemctl show -p MainPID --value "$SERVICE" 2>/dev/null)"
+  if command -v ss >/dev/null; then
+    line="$( { sudo -n ss -ltnp "sport = :$p" 2>/dev/null || ss -ltnp "sport = :$p" 2>/dev/null; } | tail -n +2 | head -n1)"
+    [ -n "$line" ] || return 1
+    pid="$(printf '%s' "$line" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
+    name="$(printf '%s' "$line" | sed -n 's/.*users:(("\([^"]*\)".*/\1/p')"
+    [ -n "$pid" ] && [ "$pid" = "$ours" ] && return 1
+  else
+    (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || return 1
+  fi
+  # can't see who owns it, but Printer Buddy is running on this port: that's us
+  if [ -z "${pid:-}" ] && systemctl is-active --quiet "$SERVICE" && [ "$p" = "$(current_port)" ]; then return 1; fi
+  case "$name" in
+    mjpg_streamer|ustreamer|camera-streamer|crowsnest) name="$name (webcam streamer)" ;;
+    "") name="another program" ;;
+  esac
+  echo "$name"
+}
+next_free_port() {   # first free port after $1
+  local p
+  for p in $(seq $(( $1 + 1 )) $(( $1 + 50 ))); do
+    [ "$p" -le 65535 ] || break
+    port_owner "$p" >/dev/null || { echo "$p"; return 0; }
+  done
+  return 1
+}
+ask_port() {   # ask until a valid, free port is typed; prints it. Enter cancels.
+  local p owner
+  while true; do
+    p="$(ask "Port (1024-65535, Enter to cancel): ")"
+    [ -n "$p" ] || return 1
+    valid_port "$p" || { echo "  Must be a number from 1024 to 65535." >&2; continue; }
+    if owner="$(port_owner "$p")"; then echo "  $p is in use by: $owner. Pick another." >&2; continue; fi
+    echo "  $p is free." >&2
+    echo "$p"; return 0
+  done
+}
+choose_port() {   # make sure PORT in printer-buddy.env is free before (re)starting
+  local p owner alt c
+  p="${PORT_GIVEN:-$(current_port)}"
+  valid_port "$p" || { echo "Port must be a number from 1024 to 65535 (got: $p)."; return 1; }
+  printf 'Checking port %s ... ' "$p"
+  if ! owner="$(port_owner "$p")"; then
+    echo "free"; set_env PORT "$p"; echo "Using port $p"; return 0
+  fi
+  echo "in use by: $owner"
+  if [ -n "$PORT_GIVEN" ]; then echo "Pick a different port with --port."; return 1; fi
+  alt="$(next_free_port "$p")" || { echo "No free port found after $p."; alt=""; }
+  if [ "$INTERACTIVE" = 1 ]; then
+    echo
+    [ -n "$alt" ] && echo "  1) Use $alt (free)       <- default"
+    echo "  2) Pick another port"
+    echo
+    if [ -n "$alt" ]; then c="$(ask "Choice [1]: ")"; else c=2; fi
+    if [ "$c" = "2" ]; then
+      p="$(ask_port)" || { echo "Cancelled. Nothing was installed."; return 1; }
+    else
+      p="$alt"
+    fi
+  else
+    [ -n "$alt" ] || { echo "Pick a free port with --port."; return 1; }
+    echo "Port $p in use by $owner, using $alt instead."; p="$alt"
+  fi
+  set_env PORT "$p"; echo "Saved PORT=$p to printer-buddy.env"
+}
+port_hint() {   # why didn't it start? say so if the port is taken
+  local o
+  if o="$(port_owner "$1")"; then echo "Port $1 is taken by $o. Pick 'P) Change port' in the menu, or run: ./install.sh --port <number>"
+  else echo "Pick 'Show logs' to see why."; fi
+}
+change_port() {
+  echo; echo "Printer Buddy is set to port $(current_port)."
+  local p; p="$(ask_port)" || { echo "Nothing changed."; return 0; }
+  [ "$p" = "$(current_port)" ] && { echo "That's already the port. Nothing changed."; return 0; }
+  set_env PORT "$p"; echo "Saved PORT=$p to printer-buddy.env"
+  if installed; then hard_restart && echo "Printer Buddy is now at $(url)"; fi
+  if [ "$(tunnel_state)" != "not set up" ]; then
+    echo "Your remote-access tunnel still points at the old port. Ask the admin to change its Service to: HTTP localhost:$p"
+  fi
+}
+
 UPDATE_INFO=""
 NEED_LOGIN=0
 check_updates() {   # one quiet fetch when the menu opens; never prompts
@@ -111,14 +200,14 @@ hard_restart() {   # full stop, then start, then wait until it answers
   local port; port="$(get_env PORT)"; port="${port:-8080}"
   sudo systemctl stop "$SERVICE"
   local i; for i in $(seq 1 20); do systemctl is-active --quiet "$SERVICE" || break; sleep 0.5; done
-  sudo systemctl start "$SERVICE" || { echo "The service failed to start. Pick 'Show logs' to see why."; return 1; }
+  sudo systemctl start "$SERVICE" || { echo "The service failed to start. $(port_hint "$port")"; return 1; }
   command -v curl >/dev/null || { sleep 3; echo "Started."; return 0; }
   printf "Waiting for Printer Buddy to come up"
   for i in $(seq 1 30); do
     if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$port/healthz" 2>/dev/null; then echo " ok"; return 0; fi
     printf "."; sleep 1
   done
-  echo; echo "It started but isn't answering on port $port yet. Pick 'Show logs' to see why."; return 1
+  echo; echo "It started but isn't answering on port $port yet. $(port_hint "$port")"; return 1
 }
 
 write_unit() {   # (re)write the systemd service file
@@ -163,6 +252,7 @@ do_install() {
   "$DIR/.venv/bin/pip" install --upgrade pip -q && "$DIR/.venv/bin/pip" install -r "$DIR/requirements.txt" -q || { echo "pip install failed."; return 1; }
   mkdir -p "$DIR/data"
   ensure_ffmpeg
+  choose_port || return 1
   write_unit
   sudo systemctl daemon-reload && sudo systemctl enable -q "$SERVICE" || return 1
   hard_restart || return 1
@@ -319,6 +409,7 @@ setup_lines() {
 
 main_menu() {
   local first=1 c
+  INTERACTIVE=1
   ensure_env
   echo "Checking for updates..."; check_updates
   if [ $NEED_LOGIN -eq 1 ] && yesno "This copy needs a GitHub login to get updates. Log in now?"; then github_login; pause; fi
@@ -333,7 +424,7 @@ main_menu() {
     row "$(printf '%-28s%s' '2) Change setup' '6) Show logs')"
     row "$(printf '%-28s%s' '3) Update' '7) Remove')"
     row "$(printf '%-28s%s' '4) Backup / restore data' '8) GitHub login')"
-    row "9) Remote access / share links"
+    row "$(printf '%-28s%s' '9) Remote / share links' 'P) Change port')"
     row ""; row "Q) Quit"; bottom
     c="$(ask "Perform action: ")"
     case "$c" in
@@ -346,6 +437,7 @@ main_menu() {
       7) do_remove; pause ;;
       8) github_login; pause ;;
       9) remote_menu ;;
+      p|port) change_port; pause ;;
       q|quit|exit) echo "Bye."; exit 0 ;;
       *) ;;
     esac
@@ -413,7 +505,11 @@ declare -A GIVEN=()
 while [ $# -gt 0 ]; do
   case "$1" in
     -y|--yes) shift ;;
-    -h|--help) echo "Usage: ./install.sh [-y] [--ui basic|advanced] [--ai off|basic|heavy] [--video snapshots|live|timelapse] [--notify basic|advanced] [--remote off|on]"; exit 0 ;;
+    -h|--help) echo "Usage: ./install.sh [-y] [--port N] [--ui basic|advanced] [--ai off|basic|heavy] [--video snapshots|live|timelapse] [--notify basic|advanced] [--remote off|on]"; exit 0 ;;
+    --port)
+      [ $# -ge 2 ] || { echo "--port needs a number"; exit 1; }
+      valid_port "$2" || { echo "--port must be a number from 1024 to 65535"; exit 1; }
+      PORT_GIVEN="$2"; shift 2 ;;
     --ui|--ai|--video|--notify|--remote)
       [ $# -ge 2 ] || { echo "$1 needs a value"; exit 1; }
       GIVEN[${1#--}]="${2,,}"; shift 2 ;;

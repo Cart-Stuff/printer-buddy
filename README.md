@@ -14,6 +14,10 @@ cd printer-buddy
 
 Then open `http://<box-ip>:8080`. Settings (notifications, subnets) live in `printer-buddy.env`.
 
+**Port:** Printer Buddy uses 8080. If something else already has it (often the webcam streamer on
+Klipper boxes), the installer says what's using it and offers the next free port. Change it later
+with **P) Change port** in the menu, or `./install.sh -y --port 8081` (the port must be free).
+
 ## Update
 
 ```bash

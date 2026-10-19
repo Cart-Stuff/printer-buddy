@@ -7,6 +7,7 @@ services:
     volumes:
       - ./data:/data
     environment:
+      # - PORT=8081                         # default 8080; change if something else uses it
       # - SCAN_SUBNETS=192.168.1.0/24        # default: the /24 this box is on
       # - NTFY_URL=https://ntfy.sh/my-printers
       # - DISCORD_WEBHOOK=https://discord.com/api/webhooks/...

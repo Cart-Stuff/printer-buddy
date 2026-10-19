@@ -73,14 +73,41 @@ service_state() {
 url() { local ip port; ip=$(hostname -I 2>/dev/null | awk '{print $1}'); port="$(get_env PORT)"; echo "http://${ip:-<this-box>}:${port:-8080}"; }
 
 UPDATE_INFO=""
-check_updates() {   # one quiet fetch when the menu opens
-  if git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1 && timeout 8 git -C "$DIR" fetch -q 2>/dev/null; then
+NEED_LOGIN=0
+check_updates() {   # one quiet fetch when the menu opens; never prompts
+  NEED_LOGIN=0
+  git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1 || { UPDATE_INFO=""; return; }
+  local out
+  if out=$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true timeout 15 git -C "$DIR" fetch -q 2>&1); then
     local behind; behind=$(git -C "$DIR" rev-list --count HEAD..@{u} 2>/dev/null || echo "")
     if [ -z "$behind" ]; then UPDATE_INFO=""
     elif [ "$behind" = "0" ]; then UPDATE_INFO="up to date"
     else UPDATE_INFO="$behind update(s) available"; fi
+  elif printf '%s' "$out" | grep -qiE "username|authentication|403|401|terminal prompts disabled|could not read"; then
+    UPDATE_INFO="GitHub login needed"; NEED_LOGIN=1
   else UPDATE_INFO="couldn't check for updates"; fi
 }
+
+github_login() {   # ask for a username + token once and save it for this repo (git's credential store)
+  local remote host; remote="$(git -C "$DIR" remote get-url origin 2>/dev/null)"
+  case "$remote" in https://*) ;; *) echo "This copy doesn't use an https:// GitHub address, so there's nothing to save."; return 1 ;; esac
+  host="${remote#https://}"; host="${host%%/*}"; host="${host#*@}"
+  echo; echo "Log in to $host so Printer Buddy can check for and download updates."
+  echo "Paste a GitHub token (a read-only one for this repo is enough)."
+  local user="x-access-token" token   # GitHub only checks the token; the username can be anything
+  read -r -s -p "  Token (hidden): " token </dev/tty || return 1; echo
+  [ -n "$token" ] || { echo "Nothing saved."; return 1; }
+  git -C "$DIR" config credential.helper store
+  printf 'protocol=https\nhost=%s\nusername=%s\npassword=%s\n\n' "$host" "$user" "$token" | git -C "$DIR" credential approve
+  check_updates
+  if [ $NEED_LOGIN -eq 1 ]; then
+    printf 'protocol=https\nhost=%s\nusername=%s\npassword=%s\n\n' "$host" "$user" "$token" | git -C "$DIR" credential reject
+    echo "GitHub didn't accept that login, so it wasn't saved. Check the username and token and try again (menu option 8)."
+    return 1
+  fi
+  echo "Saved. Update checks and updates won't ask again on this box."
+}
+
 version() { git -C "$DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown"; }
 
 hard_restart() {   # full stop, then start, then wait until it answers
@@ -198,6 +225,7 @@ main_menu() {
   local first=1 c
   ensure_env
   echo "Checking for updates..."; check_updates
+  if [ $NEED_LOGIN -eq 1 ] && yesno "This copy needs a GitHub login to get updates. Log in now?"; then github_login; pause; fi
   while true; do
     clear 2>/dev/null || true
     top; center "PRINTER BUDDY"; hr
@@ -208,7 +236,7 @@ main_menu() {
     if installed; then row "$(printf '%-28s%s' '1) Reinstall' '5) Restart service')"; else row "$(printf '%-28s%s' '1) Install' '5) Restart service')"; fi
     row "$(printf '%-28s%s' '2) Change setup' '6) Show logs')"
     row "$(printf '%-28s%s' '3) Update' '7) Remove')"
-    row "4) Backup / restore data"
+    row "$(printf '%-28s%s' '4) Backup / restore data' '8) GitHub login')"
     row ""; row "Q) Quit"; bottom
     c="$(ask "Perform action: ")"
     case "$c" in
@@ -219,6 +247,7 @@ main_menu() {
       5) restart_service; pause ;;
       6) show_logs; pause ;;
       7) do_remove; pause ;;
+      8) github_login; pause ;;
       q|quit|exit) echo "Bye."; exit 0 ;;
       *) ;;
     esac

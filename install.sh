@@ -19,7 +19,6 @@ PARTS=(
   "video|PB_VIDEO|Video|snapshots live timelapse"
   "notify|PB_NOTIFY|Notifications|basic advanced"
   "remote|PB_REMOTE|Remote access|off on"
-  "users|PB_USERS|Users|single multi"
 )
 declare -A DESC=(
   [ui.basic]="dashboard, Quick View, printer status page"
@@ -34,11 +33,9 @@ declare -A DESC=(
   [notify.advanced]="Basic + more services and progress updates"
   [remote.off]="only on your home network"
   [remote.on]="reach it from anywhere, with a login"
-  [users.single]="just me"
-  [users.multi]="multiple users and share links"
 )
 # Choices that are built today. The others are saved now and switch on once they're built.
-BUILT=" ui.basic ui.advanced ai.off video.snapshots notify.basic notify.advanced video.live video.timelapse remote.off remote.on users.single "
+BUILT=" ui.basic ui.advanced ai.off video.snapshots notify.basic notify.advanced video.live video.timelapse remote.off remote.on "
 
 # ---------------------------------------------------------------- helpers
 W=55   # inner width of the menu box
@@ -416,8 +413,8 @@ declare -A GIVEN=()
 while [ $# -gt 0 ]; do
   case "$1" in
     -y|--yes) shift ;;
-    -h|--help) echo "Usage: ./install.sh [-y] [--ui basic|advanced] [--ai off|basic|heavy] [--video snapshots|live|timelapse] [--notify basic|advanced] [--remote off|on] [--users single|multi]"; exit 0 ;;
-    --ui|--ai|--video|--notify|--remote|--users)
+    -h|--help) echo "Usage: ./install.sh [-y] [--ui basic|advanced] [--ai off|basic|heavy] [--video snapshots|live|timelapse] [--notify basic|advanced] [--remote off|on]"; exit 0 ;;
+    --ui|--ai|--video|--notify|--remote)
       [ $# -ge 2 ] || { echo "$1 needs a value"; exit 1; }
       GIVEN[${1#--}]="${2,,}"; shift 2 ;;
     *) echo "Unknown option: $1 (try --help)"; exit 1 ;;

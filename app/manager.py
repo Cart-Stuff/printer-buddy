@@ -203,7 +203,8 @@ class Manager:
     def _ai_meta(self, pid: int) -> dict:
         st = (self.ai.state.get(pid) if self.ai else None) or {}
         return {"model": self.ai.model.tag if self.ai and self.ai.model else None,
-                "score": st.get("score"), "top": st.get("top"), "scores": st.get("scores")}
+                "score": st.get("score"), "top": st.get("top"), "scores": st.get("scores"),
+                "threshold": self.ai.settings()["ai_threshold"] if self.ai else None}
 
     def _collect_on_change(self, pid: int, prev: dict, v: dict):
         event = _event_for(prev["state"], v["state"])

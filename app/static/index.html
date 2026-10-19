@@ -68,6 +68,8 @@
   .ph img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: var(--card); }
   .ph .b { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
   .ph select { font: inherit; min-height: 34px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
+  .ph .v-right { color: var(--lilac); font-weight: 700; }
+  .ph .v-false_alarm, .ph .v-missed { color: var(--red-text); font-weight: 700; }
   .ph .del { min-height: 30px; background: transparent; color: var(--red-text); padding: 0; text-align: left; }
   .pg-ai select { font: inherit; font-weight: 700; min-height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line);
                   background: var(--card); color: var(--text); }
@@ -405,6 +407,7 @@
           They go to a private dataset used to train the next AI model. Delete any photo below before it's sent, or untick this any time.</span>
       </fieldset>
       <fieldset><legend>Photos for AI</legend>
+        <p id="aiStats" style="margin:0 0 6px;font-weight:700"></p>
         <p class="muted" id="aiPhotoCounts" style="margin:0 0 10px"></p>
         <div class="ph-grid" id="aiPhotos"></div>
       </fieldset>
@@ -1649,12 +1652,18 @@ function drawPhotos() {
   if (!d) return;
   $("#aiPhotoCounts").textContent = `${d.pending} need a label · ${d.ready} labelled` +
     (d.sharing ? ` (being sent) · ${d.sent} sent` : " (kept on this box — sharing is off)") + (d.sharing && d.error ? ` · ${d.error}` : "");
+  const st = Object.entries(d.stats || {}).map(([m, v]) => {
+    const n = v.right + v.false_alarm + v.missed;
+    return n ? `${m} on your printers: ${v.right} right · ${v.false_alarm} false alarm${v.false_alarm === 1 ? "" : "s"} · ${v.missed} missed (${Math.round(100 * v.right / n)}% right)` : "";
+  }).filter(Boolean);
+  $("#aiStats").textContent = st.length ? st.join(" — ") : "Label a few photos and you'll see how often the AI gets it right on your printers.";
   const items = d.items.filter(i => i.status !== "sent");
   const opts = d.labels.map(l => `<option value="${l}">${l === "ok" ? "OK (no problem)" : esc(aiName(l))}</option>`).join("");
   $("#aiPhotos").innerHTML = items.length ? items.map(i => `<div class="ph ${i.status === "pending" ? "pending" : ""}">
       ${i.img ? `<img src="${i.img}" alt="" loading="lazy">` : ""}
       <div class="b"><span><b>${esc(i.printer || "")}</b> · ${fmtClock(new Date(i.at * 1000))}</span>
         <span class="muted">${esc((SRC_TEXT[i.source] || (() => i.source))(i))}</span>
+        ${i.verdict ? `<span class="v-${i.verdict}">${{ right: "AI was right", false_alarm: "AI false alarm", missed: "AI missed it" }[i.verdict]}</span>` : ""}
         ${i.status === "waiting" ? `<span class="muted">Labelled when the print ends</span>` :
           `<select data-plabel="${i.id}" aria-label="Label"><option value="">${i.status === "pending" ? "Needs a label…" : "Label: " + (i.label === "ok" ? "OK" : esc(aiName(i.label)))}</option>${opts}</select>`}
         <button type="button" class="del" data-pdel="${i.id}">Delete</button></div></div>`).join("")

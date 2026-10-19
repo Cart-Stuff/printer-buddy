@@ -36,6 +36,22 @@ def api_url() -> str:
     return f"https://{domain if domain.startswith('www.') else 'www.' + domain}/api/contribute"
 
 
+def verdict(item: dict) -> str | None:
+    """Was the AI right about this photo? right / false_alarm / missed, or None if it didn't score it."""
+    label, meta = item.get("label"), item.get("meta") or {}
+    if not label:
+        return None
+    if item.get("source") in ("alert", "alert_yes", "alert_no"):
+        said_problem = True                       # it alerted
+    elif meta.get("score") is None or meta.get("threshold") is None:
+        return None
+    else:
+        said_problem = float(meta["score"]) >= float(meta["threshold"])
+    if label == "ok":
+        return "false_alarm" if said_problem else "right"
+    return "right" if said_problem else "missed"
+
+
 class Collector:
     def __init__(self, store, data_dir: str, box_id: Callable[[], str], enabled: Callable[[], bool]):
         self.store = store
@@ -54,6 +70,26 @@ class Collector:
 
     def set_sharing(self, on: bool):
         self.store.save_settings({"ai_contribute": bool(on)})
+
+    # was the AI right? ------------------------------------------------------
+    def stats(self) -> dict:
+        """{model: {"right": n, "false_alarm": n, "missed": n}} for photos labelled on this box."""
+        return self.store.settings().get("ai_stats", {})
+
+    def _judge(self, item: dict):
+        """Set the item's verdict and keep the per-model counts right (also when a label changes)."""
+        old, new = item.get("verdict"), verdict(item)
+        item["verdict"] = new
+        if old == new:
+            return
+        stats = self.stats()
+        model = (item.get("meta") or {}).get("model") or "unknown"
+        m = stats.setdefault(model, {"right": 0, "false_alarm": 0, "missed": 0})
+        if old in m:
+            m[old] = max(0, m[old] - 1)
+        if new in m:
+            m[new] += 1
+        self.store.save_settings({"ai_stats": stats})
 
     # storage ----------------------------------------------------------------
     def _meta_path(self, iid: str) -> Path:
@@ -87,7 +123,7 @@ class Collector:
         items = self.items()
         count = lambda st: sum(1 for i in items if i.get("status") == st)
         return {"sharing": self.sharing(), "pending": count("pending"), "ready": count("ready"),
-                "sent": count("sent"), "error": self.last_error, "items": items[:200]}
+                "sent": count("sent"), "error": self.last_error, "stats": self.stats(), "items": items[:200]}
 
     @staticmethod
     def _clean_jpeg(jpeg: bytes) -> bytes:
@@ -113,6 +149,8 @@ class Collector:
         (self.root / f"{iid}.jpg").write_bytes(data)
         item = {"id": iid, "pid": pid, "printer": printer, "at": time.time(), "source": source,
                 "status": status, "label": label, "suggested": suggested, "meta": meta or {}}
+        if label:
+            self._judge(item)
         self._write(item)
         self._trim()
         return item
@@ -141,6 +179,7 @@ class Collector:
         if item["source"] in ("alert", "alert_yes", "alert_no"):
             item["source"] = "alert_no" if label == "ok" else "alert_yes"
         item["label"], item["status"] = label, "ready"
+        self._judge(item)
         self._write(item)
         return item
 
@@ -172,6 +211,7 @@ class Collector:
                 continue
             if ok:
                 item.update(label="ok", status="ready", source="print_ok")
+                self._judge(item)
             else:
                 item.update(status="pending", source="print_failed")
             self._write(item)
@@ -208,6 +248,7 @@ class Collector:
                 "id": self.box_id(), "label": item["label"],
                 "source": item["source"] if item["source"] != "alert" else "alert_yes",
                 "image": base64.b64encode(img.read_bytes()).decode(),
+                "verdict": item.get("verdict"),
                 "meta": {**item.get("meta", {}), "printer": item.get("printer")},
             }).encode()
             status, reply = await asyncio.to_thread(self._post, body)

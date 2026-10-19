@@ -32,6 +32,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/api/tunnel") return tunnelApi(request, env, ctx, url);
     if (url.pathname === "/api/contribute") return contributeApi(request, env);
+    if (url.pathname === "/api/ai-stats") return statsApi(env);
     const m = url.pathname.match(SHARE);
     if (!m) {
       if (url.pathname === "/") return page("Printer Buddy", "Self-hosted 3D printer monitoring. Open a share link to watch a printer.", 200);
@@ -64,6 +65,11 @@ export default {
     out.headers.set("x-robots-tag", "noindex");
     out.headers.set("referrer-policy", "no-referrer");
     return out;
+  },
+
+  // daily Discord summary (Worker > Settings > Triggers > Cron, e.g. "0 13 * * *")
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(dailySummary(env));
   },
 };
 
@@ -229,6 +235,7 @@ async function tunnelApi(request, env, ctx, url) {
 
 const LABELS = ["ok", "spaghetti", "warping", "first_layer", "failure", "stringing", "blob", "crack"];
 const SOURCES = ["alert_yes", "alert_no", "print_ok", "print_failed", "user"];
+const VERDICTS = ["right", "false_alarm", "missed"];
 
 async function contributeApi(request, env) {
   if (!env.GITHUB_TOKEN || !env.DATA_REPO || !env.BOXES) return json({ error: "Photo sharing isn't set up on this server yet." }, 503);
@@ -256,11 +263,14 @@ async function contributeApi(request, env) {
   }
 
   const meta = (b.meta && typeof b.meta === "object") ? b.meta : {};
+  const verdict = VERDICTS.includes(b.verdict) ? b.verdict : "na";
+  const model = /^[A-Za-z0-9._-]{1,40}$/.test(String(meta.model || "")) ? String(meta.model) : "unknown";
   const score = Number.isFinite(Number(meta.score)) ? Math.round(Number(meta.score) * 100) : "na";
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");      // 20261019T211429
   const rand = Math.random().toString(36).slice(2, 6);
-  const path = `photos/${label}/${id}-${stamp}-${source}-${score}-${rand}.jpg`;
-  const message = `${label} from box ${id} (${source})\n\n` + JSON.stringify({ id, label, source, meta }).slice(0, 4000);
+  const path = `photos/${label}/${id}-${stamp}-${source}-${score}-${verdict}-${rand}.jpg`;
+  const message = `${label} from box ${id} (${source}, AI ${verdict.replace("_", " ")})\n\n` +
+                  JSON.stringify({ id, label, source, verdict, meta }).slice(0, 4000);
 
   const api = `https://api.github.com/repos/${env.DATA_REPO}/contents/${path}`;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -274,6 +284,7 @@ async function contributeApi(request, env) {
       await Promise.all([
         env.BOXES.put(boxKey, String(nBox + 1), { expirationTtl: 2 * 24 * 3600 }),
         env.BOXES.put(ipKey, String(nIp + 1), { expirationTtl: 2 * 24 * 3600 }),
+        verdict !== "na" ? countVerdict(env, model, verdict, day) : null,
       ]);
       return json({ ok: true, path }, 201);
     }
@@ -284,4 +295,54 @@ async function contributeApi(request, env) {
     await new Promise(res => setTimeout(res, 300 * (attempt + 1)));
   }
   return json({ error: "GitHub was busy, try again later" }, 503);
+}
+
+// ---------------------------------------------------------------- was the AI right? (totals from shared photos)
+// stats:<model>              all-time {right, false_alarm, missed}
+// statsday:<YYYY-MM-DD>:<model>  same, for one day (kept 40 days) - used by the daily Discord summary
+const emptyStats = () => ({ right: 0, false_alarm: 0, missed: 0 });
+
+async function bump(env, key, verdict, ttl) {
+  const cur = (await env.BOXES.get(key, "json")) || emptyStats();
+  cur[verdict] = (cur[verdict] || 0) + 1;
+  await env.BOXES.put(key, JSON.stringify(cur), ttl ? { expirationTtl: ttl } : undefined);
+}
+
+function countVerdict(env, model, verdict, day) {
+  return Promise.all([bump(env, `stats:${model}`, verdict), bump(env, `statsday:${day}:${model}`, verdict, 40 * 24 * 3600)]);
+}
+
+const pct = s => { const n = s.right + s.false_alarm + s.missed; return n ? Math.round(100 * s.right / n) : 0; };
+
+async function readStats(env, prefix) {
+  const out = {};
+  const list = await env.BOXES.list({ prefix });
+  for (const k of list.keys) out[k.name.slice(prefix.length)] = (await env.BOXES.get(k.name, "json")) || emptyStats();
+  return out;
+}
+
+async function statsApi(env) {
+  if (!env.BOXES) return json({ error: "Not set up" }, 503);
+  const models = await readStats(env, "stats:");
+  const out = {};
+  for (const [m, s] of Object.entries(models)) {
+    out[m] = { ...s, photos: s.right + s.false_alarm + s.missed, right_percent: pct(s) };
+  }
+  return json({ models: out, note: "From labelled photos that Printer Buddy users chose to share." });
+}
+
+async function dailySummary(env) {
+  if (!env.BOXES || !env.DISCORD_WEBHOOK) return;
+  const y = new Date(Date.now() - 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const day = await readStats(env, `statsday:${y}:`);
+  const all = await readStats(env, "stats:");
+  const lines = Object.entries(day).map(([m, s]) => {
+    const t = all[m] || s, n = s.right + s.false_alarm + s.missed, tn = t.right + t.false_alarm + t.missed;
+    return `**${m}**: ${pct(s)}% right over ${n} photos (${s.false_alarm} false alarms, ${s.missed} missed) - all time ${pct(t)}% over ${tn}`;
+  });
+  if (!lines.length) return;   // nothing shared yesterday: stay quiet
+  await fetch(env.DISCORD_WEBHOOK, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: `AI report for ${y}\n` + lines.join("\n") }),
+  }).catch(() => {});
 }

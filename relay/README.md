@@ -102,6 +102,18 @@ curl -s -X POST https://www.printerbuddy.stream/api/contribute -H 'content-type:
 
 Expected: `{"ok": true, "path": "photos/ok/1234567-...jpg"}`. Labels: `ok, spaghetti, warping, first_layer, failure, stringing, blob, crack`.
 
+### Was the AI right?
+
+Each shared photo carries a verdict: **right**, **false_alarm** (the AI flagged a problem, the user said OK) or
+**missed** (the AI said OK, the user labelled a failure). It's in the file name (`...-<verdict>-xxxx.jpg`), so
+for the next model you can pick out exactly the photos it got wrong.
+
+- **Totals:** open `https://www.printerbuddy.stream/api/ai-stats`, e.g.
+  `{"models": {"basic-v1": {"right": 1134, "false_alarm": 41, "missed": 28, "photos": 1203, "right_percent": 94}}}`
+- **Daily Discord report:** Worker > **Settings > Triggers > Cron Triggers > Add** > `0 13 * * *` (every day at
+  13:00 UTC). Each morning it posts yesterday's numbers per model to `DISCORD_WEBHOOK`. Nothing is posted on days
+  when no photos were shared.
+
 ## On a box
 
 `./install.sh` > **9) Remote / share links** > **1) Set up automatically**. That's all.

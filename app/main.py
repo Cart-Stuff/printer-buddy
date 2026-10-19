@@ -342,6 +342,31 @@ async def test_notification(request: Request):
     return JSONResponse({"ok": True})
 
 
+# Setup chosen in install.sh (printer-buddy.env). First choice = default.
+SETUP = {
+    "ui": ("PB_UI", ("basic", "advanced")),
+    "ai": ("PB_AI", ("off", "basic", "heavy")),
+    "video": ("PB_VIDEO", ("snapshots", "live", "timelapse")),
+    "notify": ("PB_NOTIFY", ("basic", "advanced")),
+    "remote": ("PB_REMOTE", ("off", "on")),
+    "users": ("PB_USERS", ("single", "multi")),
+}
+BUILT = {"ui.basic", "ui.advanced", "ai.off", "video.snapshots", "notify.basic", "remote.off", "users.single"}
+
+
+def setup() -> dict:
+    out = {}
+    for key, (env, choices) in SETUP.items():
+        value = os.getenv(env, choices[0]).strip().lower()
+        out[key] = value if value in choices else choices[0]
+    return out
+
+
+async def get_config(request: Request):
+    chosen = setup()
+    return JSONResponse({"setup": chosen, "not_built": [k for k, v in chosen.items() if f"{k}.{v}" not in BUILT]})
+
+
 async def health(request: Request):
     return JSONResponse({"ok": True, "printers": len(manager.clients)})
 
@@ -356,6 +381,7 @@ async def lifespan(app):
 app = Starlette(routes=[
     Route("/", index),
     Route("/healthz", health),
+    Route("/api/config", get_config),
     Route("/api/scan", scan, methods=["POST"]),
     Route("/api/probe", probe, methods=["POST"]),
     Route("/api/printers", list_printers),

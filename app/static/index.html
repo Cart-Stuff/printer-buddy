@@ -73,6 +73,9 @@
   .viewbar select { font: inherit; font-weight: 700; min-height: 44px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card2); color: var(--text); }
   .viewbar input[type="search"] { width: 200px; }
   .lname { display: none; }
+  body.ui-basic .adv { display: none !important; }
+  .setup-line { text-align: center; font-size: 13px; margin-top: 32px; }
+  .setup-line .soon { color: var(--orange); }
   .fps { position: absolute; top: 10px; right: 62px; padding: 4px 8px; border-radius: 6px; background: rgba(11,11,13,.8);
          font: 700 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text); pointer-events: none; }
   .qv-cam .fps, .pg-cam .fps, .ctl-cam .fps { right: auto; left: 12px; top: 12px; }
@@ -249,11 +252,11 @@
     <h1>Your <span>Printers</span></h1>
     <div class="row">
       <div class="viewbar">
-        <div class="seg" role="group" aria-label="View">
+        <div class="seg adv" role="group" aria-label="View">
           <button id="viewCards" aria-pressed="true">Cards</button><button id="viewList" aria-pressed="false">List</button>
         </div>
         <label><span class="muted" style="font-weight:700">Sort </span><select id="sortBy">
-          <option value="status">Status</option><option value="name">Name</option><option value="progress">Progress</option><option value="custom">Custom (drag)</option>
+          <option value="status">Status</option><option value="name">Name</option><option value="progress">Progress</option><option value="custom" class="adv">Custom (drag)</option>
         </select></label>
         <input type="search" id="search" placeholder="Search printers" aria-label="Search printers">
       </div>
@@ -283,6 +286,7 @@
 
   <div id="grid" class="grid"></div>
   <p class="muted" id="noMatch" hidden style="text-align:center">No printers match your search.</p>
+  <p class="muted setup-line" id="setupLine"></p>
   <div id="empty" class="panel empty" hidden>
     <p><strong>No printers yet.</strong></p>
     <p class="muted">Scan your network to find printers running Moonraker, then pick the ones to monitor.</p>
@@ -296,10 +300,10 @@
   </div>
   <div class="pg-tabs" role="tablist">
     <button role="tab" id="tabStatus" aria-selected="true" aria-controls="pgStatus">Status</button>
-    <button role="tab" id="tabControl" aria-selected="false" aria-controls="pgControl">Control</button>
-    <button role="tab" id="tabConsole" aria-selected="false" aria-controls="pgConsole">Console</button>
-    <button role="tab" id="tabFiles" aria-selected="false" aria-controls="pgFiles">Files</button>
-    <button role="tab" id="tabHistory" aria-selected="false" aria-controls="pgHistory">History</button>
+    <button role="tab" class="adv" id="tabControl" aria-selected="false" aria-controls="pgControl">Control</button>
+    <button role="tab" class="adv" id="tabConsole" aria-selected="false" aria-controls="pgConsole">Console</button>
+    <button role="tab" class="adv" id="tabFiles" aria-selected="false" aria-controls="pgFiles">Files</button>
+    <button role="tab" class="adv" id="tabHistory" aria-selected="false" aria-controls="pgHistory">History</button>
   </div>
   <div class="pg-body" id="pgStatus" role="tabpanel" aria-labelledby="tabStatus">
     <div class="pg-cambox">
@@ -506,7 +510,7 @@ function render() {
         <dl class="stats"><div><dt>Time left</dt><dd data-f="left"></dd></div>
           <div><dt>Nozzle</dt><dd data-f="nozzle"></dd></div><div><dt>Bed</dt><dd data-f="bed"></dd></div></dl>
         <div class="actions"><button class="primary" data-act="open">Open</button><button class="outline" data-act="qv">Quick View</button></div>
-        <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="group">Set group</button><button data-act="camera">Camera settings</button><button data-act="remove" class="danger">Remove</button></div>`;
+        <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="group" class="adv">Set group</button><button data-act="camera">Camera settings</button><button data-act="remove" class="danger">Remove</button></div>`;
       const menu = el.querySelector(".menu"), mbtn = el.querySelector(".iconbtn");
       mbtn.onclick = () => { menu.hidden = !menu.hidden; mbtn.setAttribute("aria-expanded", String(!menu.hidden)); };
       el.querySelector("[data-act=rename]").onclick = () => { menu.hidden = true; rename(p.id); };
@@ -933,6 +937,7 @@ window.addEventListener("hashchange", route);
 // ---- printer page: Control tab -------------------------------------------------
 const TABS = { status: ["#tabStatus", "#pgStatus"], control: ["#tabControl", "#pgControl"], console: ["#tabConsole", "#pgConsole"], files: ["#tabFiles", "#pgFiles"], history: ["#tabHistory", "#pgHistory"] };
 function showTab(name) {
+  if (isBasic()) name = "status";
   for (const [key, [tab, panel]] of Object.entries(TABS)) {
     $(tab).setAttribute("aria-selected", String(key === name));
     $(panel).hidden = key !== name;
@@ -1123,6 +1128,28 @@ function renderControl(p) {
   }
 }
 
+
+// ---- setup from install.sh ----------------------------------------------------------
+let SETUP = { ui: "basic" };
+const isBasic = () => SETUP.ui !== "advanced";
+const PART_NAMES = { ui: "Interface", ai: "AI detection", video: "Video", notify: "Notifications", remote: "Remote access", users: "Users" };
+async function loadConfig() {
+  try {
+    const cfg = await api("/api/config");
+    SETUP = cfg.setup;
+    document.body.classList.toggle("ui-basic", isBasic());
+    if (isBasic()) {
+      $("#grid").classList.remove("list");
+      if ($("#sortBy").value === "custom") { $("#sortBy").value = "status"; arrange(); }
+      showTab("status");
+    } else if (prefs.view === "list") setView("list");
+    $("#setupLine").innerHTML = "Setup: " + Object.entries(SETUP).map(([k, v]) =>
+      `${esc(PART_NAMES[k] || k)} ${esc(v)}${cfg.not_built.includes(k) ? ' <span class="soon">(coming soon)</span>' : ""}`).join(" · ")
+      + " — run ./install.sh to change";
+  } catch {}
+}
+document.body.classList.add("ui-basic");
+loadConfig();
 
 connectEvents();
 render();

@@ -229,6 +229,31 @@ async def upload_file(request: Request):
     return JSONResponse({"ok": True, "name": name})
 
 
+async def history(request: Request):
+    client, e = _online_client(request)
+    if e:
+        return e
+    try:
+        start = max(0, int(request.query_params.get("start", 0)))
+        limit = min(100, max(1, int(request.query_params.get("limit", 30))))
+    except ValueError:
+        return err("bad start/limit")
+    try:
+        return JSONResponse(await client.history(start, limit))
+    except Exception as ex:
+        return err(str(ex) or type(ex).__name__, 502)
+
+
+async def history_totals(request: Request):
+    client, e = _online_client(request)
+    if e:
+        return e
+    try:
+        return JSONResponse(await client.history_totals())
+    except Exception as ex:
+        return err(str(ex) or type(ex).__name__, 502)
+
+
 async def printer_gcode(request: Request):
     pid = _pid(request)
     if pid is None:
@@ -296,6 +321,8 @@ app = Starlette(routes=[
     Route("/api/printers/{pid:int}/snapshot", snapshot),
     Route("/api/printers/{pid:int}/gcode", printer_gcode, methods=["POST"]),
     Route("/api/printers/{pid:int}/files", list_files),
+    Route("/api/printers/{pid:int}/history", history),
+    Route("/api/printers/{pid:int}/history/totals", history_totals),
     Route("/api/printers/{pid:int}/files", delete_file, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/files/print", print_file, methods=["POST"]),
     Route("/api/printers/{pid:int}/files/upload", upload_file, methods=["POST"]),

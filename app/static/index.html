@@ -148,6 +148,16 @@
   .files-list td.btns { white-space: nowrap; text-align: right; }
   .files-list td.btns button { margin-left: 6px; font-weight: 900; }
   .files-list td.btns .del { background: transparent; color: var(--red-text); }
+  .hist { display: flex; flex-direction: column; gap: 14px; }
+  .hist-totals { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+  .hist-totals div { border-radius: 12px; background: var(--card); border: 1px solid var(--line); padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; }
+  .hist-totals dt { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .hist-totals dd { margin: 0; font-size: 24px; font-weight: 900; }
+  .hist-box { border-radius: 12px; background: var(--card); border: 1px solid var(--line); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .res { display: inline-block; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 900; letter-spacing: .04em; text-transform: uppercase; background: var(--track); color: var(--muted); }
+  .res.done { background: var(--purple); color: #fff; }
+  .res.failed { background: var(--red); color: #fff; }
+  .res.running { background: var(--orange); color: #1A1005; }
   dialog#qv { width: min(980px, calc(100% - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 14px;
               background: var(--card); color: var(--text); }
   dialog#qv::backdrop { background: rgba(5,5,7,.88); }
@@ -219,6 +229,7 @@
     <button role="tab" id="tabControl" aria-selected="false" aria-controls="pgControl">Control</button>
     <button role="tab" id="tabConsole" aria-selected="false" aria-controls="pgConsole">Console</button>
     <button role="tab" id="tabFiles" aria-selected="false" aria-controls="pgFiles">Files</button>
+    <button role="tab" id="tabHistory" aria-selected="false" aria-controls="pgHistory">History</button>
   </div>
   <div class="pg-body" id="pgStatus" role="tabpanel" aria-labelledby="tabStatus">
     <div class="pg-cambox">
@@ -304,6 +315,20 @@
     </div>
     <div class="files-msg" id="filesMsg" aria-live="polite"></div>
     <div class="files-list" id="filesList"></div>
+  </div>
+
+  <div class="hist" id="pgHistory" role="tabpanel" aria-labelledby="tabHistory" hidden>
+    <dl class="hist-totals">
+      <div><dt>Jobs</dt><dd id="htJobs">—</dd></div>
+      <div><dt>Print time</dt><dd id="htTime">—</dd></div>
+      <div><dt>Filament</dt><dd id="htFil">—</dd></div>
+      <div><dt>Longest print</dt><dd id="htLong">—</dd></div>
+    </dl>
+    <div class="hist-box">
+      <div class="files-msg" id="histMsg" aria-live="polite"></div>
+      <div class="files-list" id="histList"></div>
+      <button id="histMore" hidden>Load more</button>
+    </div>
   </div>
 </section>
 
@@ -625,7 +650,7 @@ $("#pgFull").onclick = () => $("#pgCam").requestFullscreen?.();
 window.addEventListener("hashchange", route);
 
 // ---- printer page: Control tab -------------------------------------------------
-const TABS = { status: ["#tabStatus", "#pgStatus"], control: ["#tabControl", "#pgControl"], console: ["#tabConsole", "#pgConsole"], files: ["#tabFiles", "#pgFiles"] };
+const TABS = { status: ["#tabStatus", "#pgStatus"], control: ["#tabControl", "#pgControl"], console: ["#tabConsole", "#pgConsole"], files: ["#tabFiles", "#pgFiles"], history: ["#tabHistory", "#pgHistory"] };
 function showTab(name) {
   for (const [key, [tab, panel]] of Object.entries(TABS)) {
     $(tab).setAttribute("aria-selected", String(key === name));
@@ -633,11 +658,55 @@ function showTab(name) {
   }
   if (name === "console") { drawConsole(); $("#conInput").focus(); }
   if (name === "files") loadFiles();
+  if (name === "history") loadHistory(true);
 }
 $("#tabStatus").onclick = () => showTab("status");
 $("#tabControl").onclick = () => showTab("control");
 $("#tabConsole").onclick = () => showTab("console");
 $("#tabFiles").onclick = () => showTab("files");
+$("#tabHistory").onclick = () => showTab("history");
+
+// ---- printer page: History tab -------------------------------------------------
+const RESULT = { completed: ["Done", "done"], cancelled: ["Cancelled", ""], error: ["Failed", "failed"],
+                 klippy_shutdown: ["Failed", "failed"], klippy_disconnect: ["Failed", "failed"],
+                 interrupted: ["Interrupted", "failed"], in_progress: ["Printing", "running"], server_exit: ["Interrupted", "failed"] };
+const fmtFil = mm => mm == null ? "—" : mm >= 1000 ? `${(mm / 1000).toFixed(1)} m` : `${Math.round(mm)} mm`;
+let histJobs = [], histCount = 0, histId = null;
+async function loadHistory(reset) {
+  const id = pageId; if (id === null) return;
+  if (reset) {
+    histJobs = []; histCount = 0; histId = id; $("#histList").innerHTML = "";
+    api(`/api/printers/${id}/history/totals`).then(t => {
+      if (id !== pageId) return;
+      $("#htJobs").textContent = t.total_jobs ?? "—";
+      $("#htTime").textContent = t.total_print_time != null ? fmtDur(t.total_print_time) : "—";
+      $("#htFil").textContent = fmtFil(t.total_filament_used);
+      $("#htLong").textContent = t.longest_print != null ? fmtDur(t.longest_print) : "—";
+    }).catch(() => {});
+  }
+  $("#histMsg").textContent = "Loading…";
+  try {
+    const r = await api(`/api/printers/${id}/history?start=${histJobs.length}&limit=30`);
+    if (id !== pageId || id !== histId) return;
+    histJobs = histJobs.concat(r.jobs); histCount = r.count;
+    drawHistory();
+  } catch (e) { if (id === pageId) $("#histMsg").textContent = e.message.includes("history") ? "This printer's Moonraker has no print history turned on." : e.message; }
+}
+function drawHistory() {
+  const p = printers.get(pageId), busy = p && (p.state === "printing" || p.state === "paused");
+  $("#histMsg").textContent = histJobs.length ? `Showing ${histJobs.length} of ${histCount} prints` : "No prints recorded yet.";
+  $("#histList").innerHTML = histJobs.length ? `<table><thead><tr><th>File</th><th>Date</th><th>Time</th><th>Filament</th><th>Result</th><th></th></tr></thead><tbody>${
+    histJobs.map((j, i) => {
+      const [label, cls] = RESULT[j.status] || [j.status || "—", ""];
+      return `<tr><td class="name">${esc(j.filename)}</td><td class="num">${fmtDate(j.start_time)}</td><td class="num">${j.print_duration ? fmtDur(j.print_duration) : "—"}</td>
+        <td class="num">${fmtFil(j.filament_used)}</td><td><span class="res ${cls}">${esc(label)}</span></td>
+        <td class="btns">${j.exists ? `<button class="primary" data-reprint="${i}" ${busy ? "disabled" : ""}>Reprint</button>` : ""}</td></tr>`;
+    }).join("")
+  }</tbody></table>` : "";
+  for (const b of $("#histList").querySelectorAll("[data-reprint]")) b.onclick = () => printFile(histJobs[+b.dataset.reprint].filename);
+  $("#histMore").hidden = histJobs.length >= histCount;
+}
+$("#histMore").onclick = () => loadHistory(false);
 
 // ---- printer page: Files tab ---------------------------------------------------
 const fmtSize = b => b == null ? "—" : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;

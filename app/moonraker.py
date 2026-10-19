@@ -255,6 +255,19 @@ class MoonrakerClient:
         if status not in (200, 201):
             raise RuntimeError(f"upload failed (HTTP {status}): {resp[:200].decode(errors='replace')}")
 
+    async def history(self, start: int = 0, limit: int = 30) -> dict:
+        res = await self._call("server.history.list", {"start": start, "limit": limit, "order": "desc"})
+        jobs = [{"id": j.get("job_id"), "filename": j.get("filename"), "status": j.get("status"),
+                 "start_time": j.get("start_time"), "end_time": j.get("end_time"),
+                 "print_duration": j.get("print_duration"), "filament_used": j.get("filament_used"),
+                 "exists": j.get("exists", False)}
+                for j in (res or {}).get("jobs", [])]
+        return {"count": (res or {}).get("count", len(jobs)), "jobs": jobs}
+
+    async def history_totals(self) -> dict:
+        res = await self._call("server.history.totals")
+        return (res or {}).get("job_totals", {})
+
     async def gcode(self, script: str):
         """Run G-code; waits until Klipper finishes it (homing can take a while)."""
         return await self._call("printer.gcode.script", {"script": script}, timeout=120)

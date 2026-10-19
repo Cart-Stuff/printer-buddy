@@ -156,6 +156,21 @@ class AI:
         for pid in list(self.tasks):
             self.cancel(pid)
 
+    async def check_now(self, pid: int) -> dict:
+        """One test score of the camera right now, in any printer state. Never alerts, pauses or counts."""
+        if not enabled():
+            raise RuntimeError("AI detection is off (installer: AI detection = basic)")
+        m = self.model
+        if not m:
+            raise RuntimeError(self.error or "No AI model loaded")
+        img = await self.snapshot(pid)
+        if not img:
+            raise RuntimeError("Couldn't get a picture from this printer's camera")
+        scores = await asyncio.to_thread(m.score, img, *self.transform(pid))
+        alerts = {l: v for l, v in scores.items() if m.kinds.get(l) == "alert"}
+        top = max(alerts, key=alerts.get) if alerts else None
+        return {"scores": scores, "top": top, "score": alerts.get(top, 0.0), "at": time.time()}
+
     async def _watch(self, pid: int):
         try:
             while True:

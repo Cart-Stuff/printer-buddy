@@ -56,6 +56,9 @@
   .pg-ai { padding: 12px 14px; border-radius: 8px; background: var(--card2); display: flex; flex-direction: column; gap: 10px; }
   .pg-ai .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .pg-ai .head strong { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .pg-ai .head .ctl2 { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .pg-ai .head button { min-height: 36px; padding: 0 12px; background: var(--track); font-weight: 700; }
+  .ai-rows.idle { opacity: .45; }
   .pg-ai select { font: inherit; font-weight: 700; min-height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line);
                   background: var(--card); color: var(--text); }
   .ai-rows { display: grid; grid-template-columns: auto minmax(0, 1fr) 44px; gap: 6px 10px; align-items: center; font-size: 13px; }
@@ -450,9 +453,11 @@
       </dl>
       <div class="pg-ai ai" id="pgAi" hidden>
         <div class="head"><strong>AI watch</strong>
-          <select id="pgAiMode" aria-label="AI mode for this printer">
-            <option value="alert">Alert only</option><option value="pause">Alert + auto-pause</option><option value="off">Off</option>
-          </select></div>
+          <div class="ctl2">
+            <button type="button" id="pgAiCheck" title="Score the camera once right now. Never alerts or pauses.">Check now</button>
+            <select id="pgAiMode" aria-label="AI mode for this printer">
+              <option value="alert">Alert only</option><option value="pause">Alert + auto-pause</option><option value="off">Off</option>
+            </select></div></div>
         <div class="ai-rows" id="pgAiRows"></div>
         <div class="note" id="pgAiNote"></div>
       </div>
@@ -1538,9 +1543,12 @@ function renderPageAI(p) {
   if (!a) return;
   if (document.activeElement !== $("#pgAiMode")) $("#pgAiMode").value = a.mode;
   const m = aiCfg?.model || {}, kinds = m.kinds || {};
-  const labels = m.labels?.length ? m.labels : Object.keys(a.scores || {});
+  const test = aiTest.get(p.id), fresh = !!test && Date.now() / 1000 - test.at < 120;
+  const shown = a.watching ? a.scores : fresh ? test.scores : null;   // never show old scores as if live
+  const labels = m.labels?.length ? m.labels : Object.keys(shown || a.scores || {});
+  $("#pgAiRows").classList.toggle("idle", !a.watching && !fresh);
   $("#pgAiRows").innerHTML = labels.map(l => {
-    const v = a.scores?.[l], alert = kinds[l] === "alert", hot = alert && v >= aiThr();
+    const v = shown?.[l], alert = kinds[l] === "alert", hot = alert && v >= aiThr();
     return `<span class="lb ${alert ? "alert" : ""}">${esc(aiName(l))}</span>` +
       `<div class="tr"><div class="${hot ? "hot" : alert ? "alert" : ""}" style="width:${(v || 0) * 100}%"></div></div>` +
       `<span class="v">${v == null ? "—" : Math.round(v * 100) + "%"}</span>`;
@@ -1552,9 +1560,13 @@ function renderPageAI(p) {
     note.className = "note hot";
     note.textContent = `Possible ${aiName(a.top)} at ${fmtClock(new Date(a.alerted_at * 1000))}` + (a.mode === "pause" ? " — paused the print." : " — check the print.");
   }
-  else if (a.mode === "off") note.textContent = "AI is off for this printer.";
-  else if (a.watching) note.textContent = `Checks every ${aiCfg?.ai_interval ?? 10}s. Alerts after ${aiCfg?.ai_hold ?? 3} checks in a row at ${Math.round(aiThr() * 100)}% or more` + (a.streak ? ` (${a.streak} so far).` : ".");
-  else note.textContent = "Starts watching when a print starts. Orange bars can alert; the others are warnings only.";
+  else if (a.watching) note.textContent = `Watching. Checks every ${aiCfg?.ai_interval ?? 10}s. Alerts after ${aiCfg?.ai_hold ?? 3} checks in a row at ${Math.round(aiThr() * 100)}% or more` + (a.streak ? ` (${a.streak} so far).` : ".");
+  else {
+    const why = a.mode === "off" ? "AI is off for this printer." : `Not watching — ${p.name} isn't printing. It starts by itself when a print starts.`;
+    note.textContent = fresh
+      ? `Test check at ${fmtClock(new Date(test.at * 1000))}: highest ${aiName(test.top)} ${Math.round(test.score * 100)}% (tests never alert). ${why}`
+      : why;
+  }
 }
 async function setAIMode(id, mode) {
   try {
@@ -1567,6 +1579,14 @@ function cycleAI(id) {
   setAIMode(id, order[(order.indexOf(cur) + 1) % order.length]);
 }
 $("#pgAiMode").onchange = e => setAIMode(pageId, e.target.value);
+const aiTest = new Map();   // printer id -> last "Check now" result
+$("#pgAiCheck").onclick = async () => {
+  const btn = $("#pgAiCheck"), id = pageId;
+  btn.disabled = true; btn.textContent = "Checking…";
+  try { aiTest.set(id, await api(`/api/printers/${id}/ai/check`, { method: "POST" })); renderPage(); }
+  catch (e) { toast(e.message); }
+  finally { btn.disabled = false; btn.textContent = "Check now"; }
+};
 async function loadAI() {
   try { aiCfg = await api("/api/ai/settings"); render(); } catch {}
 }

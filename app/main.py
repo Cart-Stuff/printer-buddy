@@ -247,6 +247,16 @@ async def ai_settings(request: Request):
                          "model": manager.ai.info()})
 
 
+async def ai_check(request: Request):
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    try:
+        return JSONResponse(await manager.ai.check_now(pid))
+    except RuntimeError as e:
+        return err(str(e), 409)
+
+
 async def ai_reload(request: Request):
     await asyncio.to_thread(manager.ai.load)
     return JSONResponse(manager.ai.info())
@@ -698,6 +708,7 @@ _app = Starlette(routes=[
     Route("/api/timelapse/settings", timelapse_settings, methods=["GET", "PUT"]),
     Route("/api/ai/settings", ai_settings, methods=["GET", "PUT"]),
     Route("/api/ai/reload", ai_reload, methods=["POST"]),
+    Route("/api/printers/{pid:int}/ai/check", ai_check, methods=["POST"]),
     Route("/api/printers/{pid:int}/timelapses", list_timelapses),
     Route("/api/printers/{pid:int}/timelapses/{tid}.mp4", timelapse_video),
     Route("/api/printers/{pid:int}/timelapses/{tid}", delete_timelapse, methods=["DELETE"]),

@@ -597,7 +597,7 @@ SETUP = {
     "remote": ("PB_REMOTE", ("off", "on")),
     "users": ("PB_USERS", ("single", "multi")),
 }
-BUILT = {"ui.basic", "ui.advanced", "ai.off", "video.snapshots", "notify.basic", "notify.advanced", "video.live", "video.timelapse", "remote.off", "users.single"}
+BUILT = {"ui.basic", "ui.advanced", "ai.off", "video.snapshots", "notify.basic", "notify.advanced", "video.live", "video.timelapse", "remote.off", "remote.on", "users.single"}
 
 
 def setup() -> dict:

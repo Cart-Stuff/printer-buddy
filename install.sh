@@ -38,7 +38,7 @@ declare -A DESC=(
   [users.multi]="multiple users and share links"
 )
 # Choices that are built today. The others are saved now and switch on once they're built.
-BUILT=" ui.basic ui.advanced ai.off video.snapshots notify.basic notify.advanced video.live video.timelapse remote.off users.single "
+BUILT=" ui.basic ui.advanced ai.off video.snapshots notify.basic notify.advanced video.live video.timelapse remote.off remote.on users.single "
 
 # ---------------------------------------------------------------- helpers
 W=55   # inner width of the menu box

@@ -83,6 +83,20 @@ check_updates() {   # one quiet fetch when the menu opens
 }
 version() { git -C "$DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown"; }
 
+hard_restart() {   # full stop, then start, then wait until it answers
+  local port; port="$(get_env PORT)"; port="${port:-8080}"
+  sudo systemctl stop "$SERVICE"
+  local i; for i in $(seq 1 20); do systemctl is-active --quiet "$SERVICE" || break; sleep 0.5; done
+  sudo systemctl start "$SERVICE" || { echo "The service failed to start. Pick 'Show logs' to see why."; return 1; }
+  command -v curl >/dev/null || { sleep 3; echo "Started."; return 0; }
+  printf "Waiting for Printer Buddy to come up"
+  for i in $(seq 1 30); do
+    if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$port/healthz" 2>/dev/null; then echo " ok"; return 0; fi
+    printf "."; sleep 1
+  done
+  echo; echo "It started but isn't answering on port $port yet. Pick 'Show logs' to see why."; return 1
+}
+
 # ---------------------------------------------------------------- actions
 do_install() {
   echo; echo "Installing..."
@@ -113,22 +127,23 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 UNIT
-  sudo systemctl daemon-reload && sudo systemctl enable -q "$SERVICE" && sudo systemctl restart "$SERVICE" || return 1
-  echo "Printer Buddy is running: $(url)"
+  sudo systemctl daemon-reload && sudo systemctl enable -q "$SERVICE" || return 1
+  hard_restart || return 1
+  echo "Printer Buddy is running: $(url)  (open dashboards reload themselves)"
 }
 
 do_update() {
   echo; echo "Updating..."
   git -C "$DIR" pull --ff-only || { echo "git pull failed (local changes?). Nothing else was changed."; return 1; }
   if [ -x "$DIR/.venv/bin/pip" ]; then "$DIR/.venv/bin/pip" install -r "$DIR/requirements.txt" -q || return 1; fi
-  if installed; then sudo systemctl restart "$SERVICE"; fi
+  if installed; then hard_restart || return 1; fi
   echo "Updated to $(git -C "$DIR" log -1 --format='%h %s')"
   check_updates
 }
 
 restart_service() {
   installed || { echo "Not installed yet; pick Install first."; return 1; }
-  sudo systemctl restart "$SERVICE" && echo "Restarted."
+  hard_restart && echo "Restarted."
 }
 
 show_logs() {
@@ -225,7 +240,7 @@ setup_menu() {
     c="$(ask "Pick a part: ")"
     case "$c" in
       b|back|"")
-        if [ $changed -eq 1 ] && installed; then sudo systemctl restart "$SERVICE" && echo "Restarted with the new setup."; sleep 1; fi
+        if [ $changed -eq 1 ] && installed; then hard_restart && echo "Restarted with the new setup."; sleep 1; fi
         return ;;
     esac
     [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 1 ] && [ "$c" -le ${#PARTS[@]} ] || continue

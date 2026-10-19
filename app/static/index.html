@@ -765,8 +765,16 @@ async function removePrinter(id) {
 }
 
 // ---- live updates --------------------------------------------------------------
+let serverStarted = null;
 function connectEvents() {
   const es = new EventSource("/api/events");
+  es.onopen = async () => {   // after a restart/update, reload so the page runs the new version
+    try {
+      const { started } = await api("/api/config");
+      if (serverStarted && started !== serverStarted) location.reload();
+      serverStarted = started;
+    } catch {}
+  };
   es.addEventListener("snapshot", e => { printers.clear(); for (const p of JSON.parse(e.data)) printers.set(p.id, p); render(); route(); });
   es.addEventListener("printer", e => { const p = JSON.parse(e.data); printers.set(p.id, p); render(); });
   es.addEventListener("gcode", e => { const d = JSON.parse(e.data); conAdd(d.id, d.line.startsWith("!!") ? "err" : "resp", d.line); });

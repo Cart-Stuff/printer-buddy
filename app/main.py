@@ -6,6 +6,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -362,9 +363,12 @@ def setup() -> dict:
     return out
 
 
+STARTED = str(time.time())  # changes on every restart; open pages reload when it does
+
+
 async def get_config(request: Request):
     chosen = setup()
-    return JSONResponse({"setup": chosen, "not_built": [k for k, v in chosen.items() if f"{k}.{v}" not in BUILT]})
+    return JSONResponse({"started": STARTED, "setup": chosen, "not_built": [k for k, v in chosen.items() if f"{k}.{v}" not in BUILT]})
 
 
 async def health(request: Request):

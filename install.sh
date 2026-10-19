@@ -38,7 +38,7 @@ declare -A DESC=(
   [users.multi]="multiple users and share links"
 )
 # Choices that are built today. The others are saved now and switch on once they're built.
-BUILT=" ui.basic ui.advanced ai.off video.snapshots notify.basic notify.advanced video.live remote.off users.single "
+BUILT=" ui.basic ui.advanced ai.off video.snapshots notify.basic notify.advanced video.live video.timelapse remote.off users.single "
 
 # ---------------------------------------------------------------- helpers
 W=55   # inner width of the menu box
@@ -147,6 +147,13 @@ UNIT
   sudo systemctl daemon-reload
 }
 
+ensure_ffmpeg() {   # timelapses need ffmpeg to make the video
+  [ "$(part_value "${PARTS[2]}")" = "timelapse" ] || return 0
+  command -v ffmpeg >/dev/null && return 0
+  echo "Installing ffmpeg (needed for timelapses)..."
+  sudo apt-get update -q && sudo apt-get install -y -q ffmpeg || echo "Couldn't install ffmpeg; timelapses will save pictures but no video."
+}
+
 # ---------------------------------------------------------------- actions
 do_install() {
   echo; echo "Installing..."
@@ -158,6 +165,7 @@ do_install() {
   [ -d "$DIR/.venv" ] || python3 -m venv "$DIR/.venv" || return 1
   "$DIR/.venv/bin/pip" install --upgrade pip -q && "$DIR/.venv/bin/pip" install -r "$DIR/requirements.txt" -q || { echo "pip install failed."; return 1; }
   mkdir -p "$DIR/data"
+  ensure_ffmpeg
   write_unit
   sudo systemctl daemon-reload && sudo systemctl enable -q "$SERVICE" || return 1
   hard_restart || return 1
@@ -274,7 +282,7 @@ setup_menu() {
     c="$(ask "Pick a part: ")"
     case "$c" in
       b|back|"")
-        if [ $changed -eq 1 ] && installed; then hard_restart && echo "Restarted with the new setup."; sleep 1; fi
+        if [ $changed -eq 1 ] && installed; then ensure_ffmpeg; hard_restart && echo "Restarted with the new setup."; sleep 1; fi
         return ;;
     esac
     [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 1 ] && [ "$c" -le ${#PARTS[@]} ] || continue

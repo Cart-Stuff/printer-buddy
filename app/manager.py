@@ -32,6 +32,7 @@ class Manager:
         self._last: dict[int, dict] = {}             # last view per printer, for transition detection
         self._offline_timers: dict[int, asyncio.Task] = {}
         self._milestone: dict[int, int] = {}         # last progress % announced per printer
+        self.timelapse = None                         # set by main.py (app/timelapse.py)
         self._subs: set[asyncio.Queue] = set()
 
     async def start(self):
@@ -97,6 +98,8 @@ class Manager:
         c = self.clients.pop(pid, None)
         self.rows.pop(pid, None)
         self._last.pop(pid, None)
+        if self.timelapse:
+            self.timelapse.cancel(pid)   # recordings already saved are kept
         if t := self._offline_timers.pop(pid, None):
             t.cancel()
         self.store.delete(pid)
@@ -111,6 +114,7 @@ class Manager:
             "id": pid, "name": row["name"], "host": row["host"], "port": row["port"],
             "has_api_key": bool(row["api_key"]), "group": row.get("grp"), "position": row.get("position"),
             "cam_settings": self._cam_settings(row), "notify": row.get("notify") != 0,
+            "recording": self.timelapse.recording(pid) if self.timelapse else None,
             **self.clients[pid].view(),
         }
 
@@ -134,6 +138,8 @@ class Manager:
             self._emit(pid, event, v)
             if event == "started":
                 self._milestone[pid] = 0
+        if self.timelapse:
+            self.timelapse.on_change(pid, prev, v)
         # progress updates (advanced notifications): every N % while printing
         step = self.notifier.progress_step()
         if step and v["state"] == "printing" and prev["state"] in ("printing", "paused"):
@@ -195,6 +201,19 @@ class Manager:
                 parts.append(f"took {m // 60}h {m % 60}m" if m >= 60 else f"took {m}m")
         image = await self.snapshot(pid) if event != "offline" else None
         await self.notifier.send(title, " · ".join(parts), image)
+
+    def cam_transform(self, pid: int) -> tuple[bool, bool, int]:
+        """Flip/rotation of the main camera, as the app shows it (own settings, else Moonraker's)."""
+        row, c = self.rows.get(pid), self.clients.get(pid)
+        if not row or not c:
+            return False, False, 0
+        cs = self._cam_settings(row) or {}
+        main = cs.get("main", 0)
+        own = (cs.get("cams") or {}).get(str(main), {})
+        cams = c.cams_info()
+        mr = cams[min(main, len(cams) - 1)] if cams else {}
+        pick = lambda k: own[k] if k in own else mr.get(k, 0 if k == "rotation" else False)
+        return bool(pick("flip_h")), bool(pick("flip_v")), int(pick("rotation") or 0)
 
     async def snapshot(self, pid: int) -> bytes | None:
         """Picture from the printer's main camera (the one shown on its dashboard card)."""

@@ -19,12 +19,16 @@ from .manager import Manager
 from .net import http_get, http_stream
 from .notify import ALL_EVENTS, PROGRESS_STEPS, SERVICES, Notifier, advanced as notify_advanced
 from .store import Store
+from . import timelapse as tl
+from .timelapse import Timelapse
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 STATIC = Path(__file__).parent / "static"
 
 store = Store(os.getenv("DB_PATH", "data/monitor.db"))
 manager = Manager(store, Notifier(store))
+manager.timelapse = Timelapse(store, os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db"))),
+                              manager.snapshot, manager.cam_transform)
 scan_lock = asyncio.Lock()
 
 
@@ -218,6 +222,45 @@ async def live_stream(request: Request):
 
     return StreamingResponse(relay(), media_type=upstream.headers.get("content-type", "multipart/x-mixed-replace"),
                              headers={"Cache-Control": "no-store"})
+
+
+async def timelapse_settings(request: Request):
+    if request.method == "PUT":
+        b = await body(request)
+        allowed = {"tl_mode": tl.MODES, "tl_interval": tl.INTERVALS, "tl_fps": tl.FPS, "tl_keep": tl.KEEPS}
+        values = {}
+        for k, choices in allowed.items():
+            if k in b:
+                if b[k] not in choices:
+                    return err(f"bad value for {k}")
+                values[k] = b[k]
+        store.save_settings(values)
+    return JSONResponse({**manager.timelapse.settings(), "enabled": tl.enabled(),
+                         "choices": {"tl_mode": tl.MODES, "tl_interval": tl.INTERVALS, "tl_fps": tl.FPS, "tl_keep": tl.KEEPS}})
+
+
+async def list_timelapses(request: Request):
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    return JSONResponse({"timelapses": manager.timelapse.list(pid), "recording": manager.timelapse.recording(pid)})
+
+
+async def timelapse_video(request: Request):
+    pid = _pid(request)
+    path = manager.timelapse.video_path(pid, request.path_params["tid"]) if pid is not None else None
+    if not path:
+        return err("not found", 404)
+    download = request.query_params.get("download") == "1"
+    return FileResponse(path, media_type="video/mp4",
+                        filename=f"timelapse-{pid}-{request.path_params['tid']}.mp4" if download else None)
+
+
+async def delete_timelapse(request: Request):
+    pid = _pid(request)
+    if pid is None or not manager.timelapse.delete(pid, request.path_params["tid"]):
+        return err("not found", 404)
+    return Response(status_code=204)
 
 
 async def printer_action(request: Request):
@@ -441,7 +484,7 @@ SETUP = {
     "remote": ("PB_REMOTE", ("off", "on")),
     "users": ("PB_USERS", ("single", "multi")),
 }
-BUILT = {"ui.basic", "ui.advanced", "ai.off", "video.snapshots", "notify.basic", "notify.advanced", "video.live", "remote.off", "users.single"}
+BUILT = {"ui.basic", "ui.advanced", "ai.off", "video.snapshots", "notify.basic", "notify.advanced", "video.live", "video.timelapse", "remote.off", "users.single"}
 
 
 def setup() -> dict:
@@ -484,6 +527,10 @@ app = Starlette(routes=[
     Route("/api/printers/{pid:int}", delete_printer, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/snapshot", snapshot),
     Route("/api/printers/{pid:int}/stream", live_stream),
+    Route("/api/timelapse/settings", timelapse_settings, methods=["GET", "PUT"]),
+    Route("/api/printers/{pid:int}/timelapses", list_timelapses),
+    Route("/api/printers/{pid:int}/timelapses/{tid}.mp4", timelapse_video),
+    Route("/api/printers/{pid:int}/timelapses/{tid}", delete_timelapse, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/gcode", printer_gcode, methods=["POST"]),
     Route("/api/printers/{pid:int}/files", list_files),
     Route("/api/printers/{pid:int}/history", history),

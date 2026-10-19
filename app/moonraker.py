@@ -371,6 +371,8 @@ class MoonrakerClient:
             "bed": s.get("heater_bed", {}).get("temperature"),
             "bed_target": s.get("heater_bed", {}).get("target"),
             "has_webcam": self.snapshot_url() is not None,
+            "layer": (ps.get("info") or {}).get("current_layer"),
+            "total_layers": (ps.get("info") or {}).get("total_layer"),
             "cams": self.cams_info(),
             "speed_factor": s.get("gcode_move", {}).get("speed_factor"),
             "homed_axes": s.get("toolhead", {}).get("homed_axes"),

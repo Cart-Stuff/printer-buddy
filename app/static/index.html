@@ -82,6 +82,14 @@
   .nset .checks label { display: flex; align-items: center; gap: 8px; min-height: 40px; font-weight: 400; }
   .nset .checks input { min-height: 0; width: 18px; height: 18px; accent-color: var(--orange); }
   body.notify-basic .nadv { display: none !important; }
+  body.no-timelapse .vtl { display: none !important; }
+  .tl { display: flex; flex-direction: column; gap: 14px; }
+  .tl-set { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+  .tl-set label { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+  .tl-set select { font: inherit; min-height: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card2); color: var(--text); }
+  .tl-rec { display: inline-flex; align-items: center; gap: 8px; font-weight: 900; color: var(--red-text); }
+  .tl-rec::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: #FF4D4D; }
+  .tl video { width: 100%; max-height: 520px; background: #000; border-radius: 10px; }
   .nset fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: grid; gap: 10px; margin: 0; }
   .nset legend { font-weight: 900; padding: 0 6px; }
   .nset .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
@@ -370,6 +378,7 @@
     <button role="tab" class="adv" id="tabConsole" aria-selected="false" aria-controls="pgConsole">Console</button>
     <button role="tab" class="adv" id="tabFiles" aria-selected="false" aria-controls="pgFiles">Files</button>
     <button role="tab" class="adv" id="tabHistory" aria-selected="false" aria-controls="pgHistory">History</button>
+    <button role="tab" class="vtl" id="tabTimelapse" aria-selected="false" aria-controls="pgTimelapse">Timelapses</button>
   </div>
   <div class="pg-body" id="pgStatus" role="tabpanel" aria-labelledby="tabStatus">
     <div class="pg-cambox">
@@ -471,6 +480,23 @@
       <div class="files-msg" id="histMsg" aria-live="polite"></div>
       <div class="files-list" id="histList"></div>
       <button id="histMore" hidden>Load more</button>
+    </div>
+  </div>
+
+  <div class="tl" id="pgTimelapse" role="tabpanel" aria-labelledby="tabTimelapse" hidden>
+    <div class="hist-box">
+      <form class="tl-set" id="tlForm">
+        <label>Take a picture <select name="tl_mode" id="tlMode"><option value="layer">every layer</option><option value="interval">every few seconds</option></select></label>
+        <label id="tlEveryRow">every <select name="tl_interval"><option value="5">5 s</option><option value="10">10 s</option><option value="30">30 s</option></select></label>
+        <label>Video speed <select name="tl_fps"><option value="15">15 fps</option><option value="25">25 fps</option><option value="30">30 fps</option></select></label>
+        <label>Keep the last <select name="tl_keep"><option>5</option><option>10</option><option>20</option><option>50</option><option>100</option></select></label>
+      </form>
+      <div class="files-msg">Settings apply to all printers and take effect on the next print. "Every layer" needs a slicer that reports layers; otherwise use "every few seconds".</div>
+    </div>
+    <div class="hist-box">
+      <div id="tlStatus" class="files-msg" aria-live="polite"></div>
+      <video id="tlPlayer" controls hidden></video>
+      <div class="files-list" id="tlList"></div>
     </div>
   </div>
 </section>
@@ -1067,9 +1093,10 @@ $("#pgFull").onclick = () => $("#pgCam").requestFullscreen?.();
 window.addEventListener("hashchange", route);
 
 // ---- printer page: Control tab -------------------------------------------------
-const TABS = { status: ["#tabStatus", "#pgStatus"], control: ["#tabControl", "#pgControl"], console: ["#tabConsole", "#pgConsole"], files: ["#tabFiles", "#pgFiles"], history: ["#tabHistory", "#pgHistory"] };
+const TABS = { status: ["#tabStatus", "#pgStatus"], control: ["#tabControl", "#pgControl"], console: ["#tabConsole", "#pgConsole"], files: ["#tabFiles", "#pgFiles"], history: ["#tabHistory", "#pgHistory"], timelapse: ["#tabTimelapse", "#pgTimelapse"] };
 function showTab(name) {
-  if (isBasic()) name = "status";
+  if (name === "timelapse" && SETUP.video !== "timelapse") name = "status";
+  if (isBasic() && name !== "timelapse") name = "status";
   for (const [key, [tab, panel]] of Object.entries(TABS)) {
     $(tab).setAttribute("aria-selected", String(key === name));
     $(panel).hidden = key !== name;
@@ -1077,6 +1104,7 @@ function showTab(name) {
   if (name === "console") { drawConsole(); $("#conInput").focus(); }
   if (name === "files") loadFiles();
   if (name === "history") loadHistory(true);
+  if (name === "timelapse") loadTimelapses();
 }
 $("#tabStatus").onclick = () => showTab("status");
 $("#tabControl").onclick = () => showTab("control");
@@ -1125,6 +1153,54 @@ function drawHistory() {
   $("#histMore").hidden = histJobs.length >= histCount;
 }
 $("#histMore").onclick = () => loadHistory(false);
+$("#tabTimelapse").onclick = () => showTab("timelapse");
+
+// ---- printer page: Timelapses tab ------------------------------------------------
+async function loadTimelapseSettings() {
+  try {
+    const c = await api("/api/timelapse/settings"), f = $("#tlForm");
+    for (const k of ["tl_mode", "tl_interval", "tl_fps", "tl_keep"]) f[k].value = String(c[k]);
+    $("#tlEveryRow").hidden = c.tl_mode !== "interval";
+  } catch {}
+}
+$("#tlForm").onchange = async () => {
+  const f = $("#tlForm");
+  $("#tlEveryRow").hidden = f.tl_mode.value !== "interval";
+  try {
+    await api("/api/timelapse/settings", { method: "PUT", body: JSON.stringify({ tl_mode: f.tl_mode.value,
+      tl_interval: +f.tl_interval.value, tl_fps: +f.tl_fps.value, tl_keep: +f.tl_keep.value }) });
+    toast("Timelapse settings saved");
+  } catch (e) { toast(e.message); }
+};
+async function loadTimelapses() {
+  const id = pageId; if (id === null) return;
+  loadTimelapseSettings();
+  $("#tlPlayer").hidden = true; $("#tlPlayer").removeAttribute("src");
+  try {
+    const { timelapses, recording } = await api(`/api/printers/${id}/timelapses`);
+    if (id !== pageId) return;
+    $("#tlStatus").innerHTML = (recording !== null ? `<span class="tl-rec">Recording · ${recording} pictures so far</span> ` : "")
+      + (timelapses.length ? `${timelapses.length} timelapse${timelapses.length > 1 ? "s" : ""}` : (recording === null ? "No timelapses yet. One is recorded for every print." : ""));
+    $("#tlList").innerHTML = timelapses.length ? `<table><thead><tr><th>Print</th><th>Date</th><th>Length</th><th>Size</th><th>Result</th><th></th></tr></thead><tbody>${
+      timelapses.map((t, i) => {
+        const [label, cls] = RESULT[{ complete: "completed", cancelled: "cancelled", error: "error", standby: "completed" }[t.result]] || [t.result, ""];
+        return `<tr><td class="name">${esc(t.file || "—")}${t.error ? `<br><span class="muted" style="font-weight:400">${esc(t.error)}</span>` : ""}</td>
+          <td class="num">${fmtDate(t.started)}</td><td class="num">${t.length != null ? `${t.length}s` : "—"}</td><td class="num">${fmtSize(t.size)}</td>
+          <td><span class="res ${cls}">${esc(label)}</span></td>
+          <td class="btns">${t.video ? `<button class="primary" data-play="${i}">Play</button><a class="outline" style="display:inline-flex;align-items:center;min-height:44px;padding:0 14px;margin-left:6px;border-radius:8px;border:1.5px solid var(--orange);color:var(--orange);font-weight:900;text-decoration:none" href="/api/printers/${id}/timelapses/${t.id}.mp4?download=1">Download</a>` : ""}<button class="del" data-tdel="${i}">Delete</button></td></tr>`;
+      }).join("")
+    }</tbody></table>` : "";
+    for (const b of $("#tlList").querySelectorAll("[data-play]")) b.onclick = () => {
+      const t = timelapses[+b.dataset.play], v = $("#tlPlayer");
+      v.src = `/api/printers/${id}/timelapses/${t.id}.mp4`; v.hidden = false; v.play().catch(() => {}); v.scrollIntoView({ block: "nearest" });
+    };
+    for (const b of $("#tlList").querySelectorAll("[data-tdel]")) b.onclick = async () => {
+      const t = timelapses[+b.dataset.tdel];
+      if (!confirm(`Delete the timelapse of ${t.file || "this print"}?`)) return;
+      try { await api(`/api/printers/${id}/timelapses/${t.id}`, { method: "DELETE" }); loadTimelapses(); } catch (e) { toast(e.message); }
+    };
+  } catch (e) { if (id === pageId) $("#tlStatus").textContent = e.message; }
+}
 
 // ---- printer page: Files tab ---------------------------------------------------
 const fmtSize = b => b == null ? "—" : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
@@ -1328,6 +1404,7 @@ async function loadConfig() {
     SETUP = cfg.setup;
     document.body.classList.toggle("ui-basic", isBasic());
     document.body.classList.toggle("notify-basic", SETUP.notify !== "advanced");
+    document.body.classList.toggle("no-timelapse", SETUP.video !== "timelapse");
     if (isBasic()) {
       $("#grid").classList.remove("list");
       if ($("#sortBy").value === "custom") { $("#sortBy").value = "status"; arrange(); }
@@ -1338,7 +1415,7 @@ async function loadConfig() {
       + " — run ./install.sh to change";
   } catch {}
 }
-document.body.classList.add("ui-basic", "notify-basic");
+document.body.classList.add("ui-basic", "notify-basic", "no-timelapse");
 loadConfig();
 
 connectEvents();

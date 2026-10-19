@@ -38,14 +38,14 @@ declare -A DESC=(
   [remote.on]="reach it from anywhere, with a login"
 )
 # Choices that are built today. The others are saved now and switch on once they're built.
-BUILT=" ui.basic ui.advanced ai.off video.snapshots notify.basic notify.advanced video.live video.timelapse remote.off remote.on "
+BUILT=" ui.basic ui.advanced ai.off ai.basic video.snapshots notify.basic notify.advanced video.live video.timelapse remote.off remote.on "
 
 # ---------------------------------------------------------------- helpers
 W=55   # inner width of the menu box
 hr()    { printf '|%s|\n' "$(printf '%*s' $((W + 2)) '' | tr ' ' '-')"; }
 top()   { printf '/%s\\\n' "$(printf '%*s' $((W + 2)) '' | tr ' ' '=')"; }
 bottom(){ printf '\\%s/\n' "$(printf '%*s' $((W + 2)) '' | tr ' ' '=')"; }
-row()   { printf '| %-*s |\n' "$W" "${1:0:$W}"; }
+row()   { local s="${1:0:$W}"; printf '| %s%*s |\n' "$s" $((W - ${#s})) ''; }
 center(){ local t="$1" pad=$(( (W - ${#1}) / 2 )); printf '| %*s%-*s |\n' "$pad" '' $((W - pad)) "$t"; }
 ask()   { local a; read -r -p "$1" a </dev/tty || a=""; printf '%s' "${a,,}"; }
 pause() { read -r -p "Press Enter to go back..." _ </dev/tty || true; }
@@ -240,6 +240,27 @@ ensure_ffmpeg() {   # timelapses need ffmpeg to make the video
   sudo apt-get update -q && sudo apt-get install -y -q ffmpeg || echo "Couldn't install ffmpeg; timelapses will save pictures but no video."
 }
 
+ai_model() {   # installed AI model version (newest), or nothing
+  local f; f="$(ls -1t "$DIR"/data/ai/*/model.json 2>/dev/null | head -n1)"
+  [ -n "$f" ] && basename "$(dirname "$f")"
+}
+
+ensure_ai() {   # AI detection = basic: libraries + newest model from this repo's releases
+  [ "$(part_value "${PARTS[1]}")" = "basic" ] || return 0
+  case "$(uname -m)" in
+    aarch64|arm64|x86_64|amd64) ;;
+    *) echo "AI detection needs a 64-bit system (this one is $(uname -m)). Skipping AI; everything else works."
+       echo "  On a Raspberry Pi, use Raspberry Pi OS (64-bit)."; return 0 ;;
+  esac
+  echo "Installing AI libraries..."
+  "$DIR/.venv/bin/pip" install -r "$DIR/requirements-ai.txt" -q \
+    || { echo "Couldn't install the AI libraries. Skipping AI; everything else works."; return 0; }
+  mkdir -p "$DIR/data/ai"
+  "$DIR/.venv/bin/python" "$DIR/app/model_download.py" --dir "$DIR/data/ai" \
+    || echo "No AI model yet. AI stays off until one downloads (try 3) Update later)."
+  return 0
+}
+
 # ---------------------------------------------------------------- actions
 do_install() {
   echo; echo "Installing..."
@@ -252,6 +273,7 @@ do_install() {
   "$DIR/.venv/bin/pip" install --upgrade pip -q && "$DIR/.venv/bin/pip" install -r "$DIR/requirements.txt" -q || { echo "pip install failed."; return 1; }
   mkdir -p "$DIR/data"
   ensure_ffmpeg
+  ensure_ai
   choose_port || return 1
   write_unit
   sudo systemctl daemon-reload && sudo systemctl enable -q "$SERVICE" || return 1
@@ -263,6 +285,7 @@ do_update() {
   echo; echo "Updating..."
   git -C "$DIR" pull --ff-only || { echo "git pull failed (local changes?). Nothing else was changed."; return 1; }
   if [ -x "$DIR/.venv/bin/pip" ]; then "$DIR/.venv/bin/pip" install -r "$DIR/requirements.txt" -q || return 1; fi
+  [ -x "$DIR/.venv/bin/pip" ] && ensure_ai
   if installed; then write_unit; hard_restart || return 1; fi
   echo "Updated to $(git -C "$DIR" log -1 --format='%h %s')"
   check_updates
@@ -403,6 +426,9 @@ setup_lines() {
   for part in "${PARTS[@]}"; do
     IFS='|' read -r key var name choices <<<"$part"
     v="$(part_value "$part")"; note=""; built "$key.$v" || note="(coming soon)"
+    if [ "$key" = "ai" ] && [ "$v" = "basic" ]; then
+      local m; m="$(ai_model)"; note="${m:+(model $m)}"; note="${note:-(no model yet)}"
+    fi
     row "$(printf '%-15s %-11s %s' "$name" "$v" "$note")"
   done
 }
@@ -459,7 +485,7 @@ setup_menu() {
     c="$(ask "Pick a part: ")"
     case "$c" in
       b|back|"")
-        if [ $changed -eq 1 ] && installed; then ensure_ffmpeg; hard_restart && echo "Restarted with the new setup."; sleep 1; fi
+        if [ $changed -eq 1 ] && installed; then ensure_ffmpeg; ensure_ai; hard_restart && echo "Restarted with the new setup."; sleep 1; fi
         return ;;
     esac
     [[ "$c" =~ ^[0-9]+$ ]] && [ "$c" -ge 1 ] && [ "$c" -le ${#PARTS[@]} ] || continue

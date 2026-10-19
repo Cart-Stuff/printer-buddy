@@ -17,14 +17,14 @@ from starlette.routing import Route
 from . import discovery
 from .manager import Manager
 from .net import http_get
-from .notify import Notifier
+from .notify import ALL_EVENTS, Notifier
 from .store import Store
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 STATIC = Path(__file__).parent / "static"
 
 store = Store(os.getenv("DB_PATH", "data/monitor.db"))
-manager = Manager(store, Notifier())
+manager = Manager(store, Notifier(store))
 scan_lock = asyncio.Lock()
 
 
@@ -336,11 +336,40 @@ async def events(request: Request):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+async def get_notify_settings(request: Request):
+    return JSONResponse({**manager.notifier.config(), "all_events": ALL_EVENTS})
+
+
+async def save_notify_settings(request: Request):
+    b = await body(request)
+    values = {}
+    for k in ("ntfy_url", "ntfy_token", "discord_webhook"):
+        if k in b:
+            v = str(b[k] or "").strip()
+            if v and k != "ntfy_token" and not v.startswith(("http://", "https://")):
+                return err(f"{k.replace('_', ' ')} must start with http:// or https://")
+            values[k] = v
+    if "events" in b:
+        if not isinstance(b["events"], list):
+            return err("events must be a list")
+        values["events"] = [e for e in b["events"] if e in ALL_EVENTS]
+    if "attach_snapshot" in b:
+        values["attach_snapshot"] = bool(b["attach_snapshot"])
+    store.save_settings(values)
+    return await get_notify_settings(request)
+
+
 async def test_notification(request: Request):
     if not manager.notifier.enabled:
-        return err("no notification target set (NTFY_URL or DISCORD_WEBHOOK)")
-    await manager.notifier.send("Printer monitor", "Test notification")
-    return JSONResponse({"ok": True})
+        return err("add an ntfy topic URL or a Discord webhook first")
+    image = None
+    for pid in list(manager.clients):
+        if image := await manager.snapshot(pid):
+            break
+    errors = await manager.notifier.send("Printer Buddy", "Test notification - it works!", image)
+    if errors:
+        return err("; ".join(errors), 502)
+    return JSONResponse({"ok": True, "with_snapshot": bool(image)})
 
 
 # Setup chosen in install.sh (printer-buddy.env). First choice = default.
@@ -403,5 +432,7 @@ app = Starlette(routes=[
     Route("/api/printers/{pid:int}/files/upload", upload_file, methods=["POST"]),
     Route("/api/printers/{pid:int}/{action}", printer_action, methods=["POST"]),
     Route("/api/events", events),
+    Route("/api/notify/settings", get_notify_settings),
+    Route("/api/notify/settings", save_notify_settings, methods=["PUT"]),
     Route("/api/notify/test", test_notification, methods=["POST"]),
 ], lifespan=lifespan)

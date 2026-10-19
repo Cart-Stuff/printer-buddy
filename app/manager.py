@@ -4,12 +4,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 
 from .moonraker import MoonrakerClient
+from .net import http_get
 from .notify import Notifier
 from .store import Store
 
 log = logging.getLogger(__name__)
+OFFLINE_GRACE = float(os.getenv("OFFLINE_GRACE", "60"))  # seconds a printer must stay gone mid-print before alerting
 
 
 def _event_for(prev: str | None, new: str | None) -> str | None:
@@ -26,7 +29,8 @@ class Manager:
         self.notifier = notifier
         self.clients: dict[int, MoonrakerClient] = {}
         self.rows: dict[int, dict] = {}
-        self._last_state: dict[int, str | None] = {}
+        self._last: dict[int, dict] = {}             # last view per printer, for transition detection
+        self._offline_timers: dict[int, asyncio.Task] = {}
         self._subs: set[asyncio.Queue] = set()
 
     async def start(self):
@@ -34,6 +38,8 @@ class Manager:
             self._spawn(row)
 
     async def stop(self):
+        for t in self._offline_timers.values():
+            t.cancel()
         await asyncio.gather(*(c.stop() for c in self.clients.values()))
 
     def _spawn(self, row: dict):
@@ -84,7 +90,9 @@ class Manager:
     async def remove(self, pid: int):
         c = self.clients.pop(pid, None)
         self.rows.pop(pid, None)
-        self._last_state.pop(pid, None)
+        self._last.pop(pid, None)
+        if t := self._offline_timers.pop(pid, None):
+            t.cancel()
         self.store.delete(pid)
         if c:
             await c.stop()
@@ -105,33 +113,81 @@ class Manager:
 
     # updates ------------------------------------------------------------
     def _on_change(self, client: MoonrakerClient):
-        if client.id not in self.rows:
+        pid = client.id
+        if pid not in self.rows:
             return
-        v = self.view(client.id)
-        prev = self._last_state.get(client.id)
-        self._last_state[client.id] = v["state"]
-        event = _event_for(prev, v["state"])
-        if event:
-            self._broadcast("event", {"id": client.id, "event": event, "name": v["name"]})
-            if self.notifier.enabled and self.notifier.wants(event):
-                asyncio.get_running_loop().create_task(self._notify(event, v))
+        v = self.view(pid)
+        prev = self._last.get(pid)
+        self._last[pid] = v
+        if prev:
+            self._detect(pid, prev, v)
         self._broadcast("printer", v)
+
+    def _detect(self, pid: int, prev: dict, v: dict):
+        if event := _event_for(prev["state"], v["state"]):
+            self._emit(pid, event, v)
+        # Klipper shut down / errored (MCU shutdown, thermal runaway, ...): wait a moment for the reason
+        if v["connection"] == "online" and prev["klippy_state"] == "ready" and v["klippy_state"] in ("shutdown", "error"):
+            asyncio.get_running_loop().call_later(
+                2, lambda: self._emit(pid, "shutdown", self.view(pid)) if pid in self.rows else None)
+        # lost the printer mid-print: alert only if it stays gone for OFFLINE_GRACE seconds
+        if prev["connection"] == "online" and v["connection"] != "online" and prev["state"] in ("printing", "paused"):
+            if pid not in self._offline_timers:
+                self._offline_timers[pid] = asyncio.create_task(self._offline_check(pid, prev))
+        elif v["connection"] == "online" and (t := self._offline_timers.pop(pid, None)):
+            t.cancel()
+
+    async def _offline_check(self, pid: int, before: dict):
+        try:
+            await asyncio.sleep(OFFLINE_GRACE)
+            c = self.clients.get(pid)
+            if c and c.connection != "online":
+                self._emit(pid, "offline", before)
+        finally:
+            self._offline_timers.pop(pid, None)
+
+    def _emit(self, pid: int, event: str, v: dict):
+        self._broadcast("event", {"id": pid, "event": event, "name": v["name"]})
+        if self.notifier.enabled and self.notifier.wants(event):
+            asyncio.get_running_loop().create_task(self._notify(pid, event, v))
 
     def _on_gcode(self, client: MoonrakerClient, line: str):
         if client.id in self.rows:
             self._broadcast("gcode", {"id": client.id, "line": line})
 
-    async def _notify(self, event: str, v: dict):
-        title = f"{v['name']}: print {event}"
-        parts = [v["filename"] or "unknown file"]
-        if event == "failed" and v["message"]:
-            parts.append(v["message"])
-        if event in ("paused", "cancelled", "failed"):
-            parts.append(f"{v['progress'] * 100:.0f}% done")
-        if event == "finished" and v["print_duration"]:
-            m = int(v["print_duration"] // 60)
-            parts.append(f"took {m // 60}h {m % 60}m")
-        await self.notifier.send(title, " · ".join(parts))
+    async def _notify(self, pid: int, event: str, v: dict):
+        name, file = v["name"], v.get("filename") or "unknown file"
+        if event == "offline":
+            title, parts = f"{name}: went offline mid-print", [file, f"{v['progress'] * 100:.0f}% done"]
+        elif event == "shutdown":
+            title, parts = f"{name}: Klipper {v['klippy_state']}", [v.get("klippy_message") or "no reason given"]
+        else:
+            title, parts = f"{name}: print {event}", [file]
+            if event == "failed" and v.get("message"):
+                parts.append(v["message"])
+            if event in ("paused", "cancelled", "failed"):
+                parts.append(f"{v['progress'] * 100:.0f}% done")
+            if event == "finished" and v.get("print_duration"):
+                m = int(v["print_duration"] // 60)
+                parts.append(f"took {m // 60}h {m % 60}m" if m >= 60 else f"took {m}m")
+        image = await self.snapshot(pid) if event != "offline" else None
+        await self.notifier.send(title, " · ".join(parts), image)
+
+    async def snapshot(self, pid: int) -> bytes | None:
+        """Picture from the printer's main camera (the one shown on its dashboard card)."""
+        c, row = self.clients.get(pid), self.rows.get(pid)
+        if not c or not row:
+            return None
+        cam = (self._cam_settings(row) or {}).get("main", 0)
+        url = c.snapshot_url(cam)
+        if not url or not url.startswith("http://"):
+            return None
+        try:
+            status, _, data = await http_get(url, timeout=6)
+            return data if status == 200 and data else None
+        except Exception as e:
+            log.info("snapshot for printer %s failed: %s", pid, e)
+            return None
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=200)

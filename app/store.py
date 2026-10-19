@@ -1,6 +1,7 @@
 """SQLite storage for the printers the user chose to monitor."""
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import time
@@ -14,6 +15,10 @@ CREATE TABLE IF NOT EXISTS printers (
     api_key    TEXT,
     created_at REAL NOT NULL,
     UNIQUE(host, port)
+);
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 """
 
@@ -62,6 +67,14 @@ class Store:
     def set_order(self, ids: list[int]):
         with self.db:
             self.db.executemany("UPDATE printers SET position=? WHERE id=?", [(i, pid) for i, pid in enumerate(ids)])
+
+    def settings(self) -> dict:
+        return {r["key"]: json.loads(r["value"]) for r in self.db.execute("SELECT key, value FROM settings")}
+
+    def save_settings(self, values: dict):
+        with self.db:
+            self.db.executemany("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
+                                [(k, json.dumps(v)) for k, v in values.items()])
 
     def delete(self, pid: int):
         with self.db:

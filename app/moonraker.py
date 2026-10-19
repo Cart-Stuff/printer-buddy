@@ -52,6 +52,7 @@ class MoonrakerClient:
         self.connection = "connecting"  # connecting | online | offline | auth_error
         self.error: str | None = None
         self.klippy_state: str | None = None
+        self.klippy_message: str | None = None
         self.status: dict = {}
         self.webcams: list[dict] = []
         self._ids = itertools.count(1)
@@ -121,6 +122,8 @@ class MoonrakerClient:
             await self._load_webcams()
             if info.get("klippy_state") == "ready":
                 await self._subscribe()
+            elif info.get("klippy_state") in ("shutdown", "error"):
+                await self._load_klippy_message()
             await reader
         finally:
             reader.cancel()
@@ -188,10 +191,11 @@ class MoonrakerClient:
             _merge(self.status, params[0])
             self._changed()
         elif method == "notify_klippy_ready":
-            self._set(klippy_state="ready")
+            self._set(klippy_state="ready", klippy_message=None)
             asyncio.create_task(self._safe(self._subscribe()))
         elif method == "notify_klippy_shutdown":
             self._set(klippy_state="shutdown")
+            asyncio.create_task(self._safe(self._load_klippy_message()))
         elif method == "notify_klippy_disconnected":
             self._set(klippy_state="disconnected")
         elif method == "notify_gcode_response" and params:
@@ -208,6 +212,14 @@ class MoonrakerClient:
             await coro
         except Exception as e:
             log.warning("printer %s: %s", self.id, e)
+
+    async def _load_klippy_message(self):
+        """printer.info carries Klipper's state_message (e.g. 'MCU shutdown: Timer too close')."""
+        try:
+            res = await self._call("printer.info")
+            self._set(klippy_state=res.get("state", self.klippy_state), klippy_message=res.get("state_message"))
+        except RPCError:
+            pass
 
     async def _subscribe(self):
         res = await self._call("printer.objects.subscribe", {"objects": SUBSCRIBE})
@@ -325,6 +337,7 @@ class MoonrakerClient:
             "connection": self.connection,
             "error": self.error,
             "klippy_state": self.klippy_state,
+            "klippy_message": self.klippy_message if self.klippy_state != "ready" else None,
             "state": state,
             "filename": ps.get("filename") or None,
             "message": ps.get("message") or ds.get("message") or None,

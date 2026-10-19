@@ -75,6 +75,12 @@
   .lname { display: none; }
   body.ui-basic .adv { display: none !important; }
   .setup-line { text-align: center; font-size: 13px; margin-top: 32px; }
+  .nset { display: grid; gap: 14px; max-width: 680px; }
+  .nset label.field { display: grid; gap: 6px; font-weight: 700; }
+  .nset .hint { font-size: 13px; font-weight: 400; color: var(--muted); }
+  .nset .checks { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+  .nset .checks label { display: flex; align-items: center; gap: 8px; min-height: 40px; font-weight: 400; }
+  .nset .checks input { min-height: 0; width: 18px; height: 18px; accent-color: var(--orange); }
   .setup-line .soon { color: var(--orange); }
   .fps { position: absolute; top: 10px; right: 62px; padding: 4px 8px; border-radius: 6px; background: rgba(11,11,13,.8);
          font: 700 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text); pointer-events: none; }
@@ -260,10 +266,31 @@
         </select></label>
         <input type="search" id="search" placeholder="Search printers" aria-label="Search printers">
       </div>
+      <button id="notifyBtn">Notifications</button>
       <button id="manualBtn">Add by IP</button>
       <button id="scanBtn" class="primary">Scan network</button>
     </div>
   </div>
+
+  <section id="notifyPanel" class="panel" hidden>
+    <h2>Notifications</h2>
+    <form id="notifyForm" class="nset">
+      <label class="field">ntfy topic URL
+        <input name="ntfy_url" placeholder="https://ntfy.sh/my-printers" autocomplete="off">
+        <span class="hint">Install the ntfy app on your phone and subscribe to the same topic. Use a topic name only you know.</span></label>
+      <label class="field">ntfy access token <span class="hint">only for protected topics or your own ntfy server</span>
+        <input name="ntfy_token" type="password" autocomplete="off"></label>
+      <label class="field">Discord webhook URL
+        <input name="discord_webhook" placeholder="https://discord.com/api/webhooks/..." autocomplete="off"></label>
+      <div class="field"><strong>Notify me when…</strong><div class="checks" id="eventChecks"></div></div>
+      <div class="checks"><label><input type="checkbox" name="attach_snapshot"> Attach a webcam snapshot</label></div>
+      <div class="row" style="justify-content:flex-end">
+        <button type="button" id="notifyClose">Close</button>
+        <button type="button" id="notifyTest">Send test</button>
+        <button class="primary">Save</button>
+      </div>
+    </form>
+  </section>
 
   <section id="manual" class="panel" hidden>
     <h2>Add a printer by address</h2>
@@ -544,7 +571,7 @@ function render() {
     bar.style.width = `${pct * 100}%`; bar.style.background = barColor;
 
     const status = el.querySelector(".status");
-    const detail = (p.state === "error" && p.message) || null;
+    const detail = p.klippy_message || (p.state === "error" && p.message) || null;
     status.innerHTML = `<span style="color:${statusColor}">${esc(detail || statusText)}</span>` +
       (p.filename && (active || p.state === "complete") ? ` <span class="file">· ${esc(p.filename)}</span>` : "");
     status.title = [detail || statusText, p.filename].filter(Boolean).join(" · ");
@@ -779,7 +806,10 @@ function connectEvents() {
   es.addEventListener("printer", e => { const p = JSON.parse(e.data); printers.set(p.id, p); render(); });
   es.addEventListener("gcode", e => { const d = JSON.parse(e.data); conAdd(d.id, d.line.startsWith("!!") ? "err" : "resp", d.line); });
   es.addEventListener("removed", e => { printers.delete(JSON.parse(e.data).id); render(); });
-  es.addEventListener("event", e => { const d = JSON.parse(e.data); toast(`${d.name}: print ${d.event}`); });
+  es.addEventListener("event", e => {
+    const d = JSON.parse(e.data);
+    toast(d.event === "offline" ? `${d.name} went offline mid-print` : d.event === "shutdown" ? `${d.name}: Klipper shut down` : `${d.name}: print ${d.event}`);
+  });
 }
 
 // ---- scan → pick ---------------------------------------------------------------
@@ -915,7 +945,7 @@ function renderPage() {
   setupCamBox($("#pgCam"), $("#pgImg"), p, pageSel);
   $("#pgNoCam").textContent = live ? "No camera" : "Can't reach printer";
   $("#pgBar").style.width = `${pct * 100}%`; $("#pgBar").style.background = barColor;
-  const state = $("#pgState"); state.textContent = (p.state === "error" && p.message) || statusText; state.style.color = statusColor;
+  const state = $("#pgState"); state.textContent = p.klippy_message || (p.state === "error" && p.message) || statusText; state.style.color = statusColor;
   $("#pgFile").textContent = showPct && p.filename ? p.filename : "";
   const pctEl = $("#pgPct");
   pctEl.innerHTML = showPct ? `${Math.floor(pct * 100)}<small>%</small>` : "";
@@ -1136,6 +1166,39 @@ function renderControl(p) {
   }
 }
 
+
+// ---- notification settings -------------------------------------------------------------
+const EVENT_LABELS = { started: "a print starts", paused: "a print pauses", resumed: "a print resumes", finished: "a print finishes",
+  failed: "a print fails", cancelled: "a print is cancelled", offline: "a printer goes offline mid-print", shutdown: "Klipper shuts down or errors" };
+async function loadNotify() {
+  const c = await api("/api/notify/settings"), f = $("#notifyForm");
+  f.ntfy_url.value = c.ntfy_url || ""; f.ntfy_token.value = c.ntfy_token || "";
+  f.discord_webhook.value = c.discord_webhook || ""; f.attach_snapshot.checked = !!c.attach_snapshot;
+  $("#eventChecks").innerHTML = c.all_events.map(e =>
+    `<label><input type="checkbox" value="${e}" ${c.events.includes(e) ? "checked" : ""}> ${esc(EVENT_LABELS[e] || e)}</label>`).join("");
+}
+function notifyBody() {
+  const f = $("#notifyForm");
+  return JSON.stringify({ ntfy_url: f.ntfy_url.value, ntfy_token: f.ntfy_token.value, discord_webhook: f.discord_webhook.value,
+    attach_snapshot: f.attach_snapshot.checked, events: [...$("#eventChecks").querySelectorAll("input:checked")].map(i => i.value) });
+}
+$("#notifyBtn").onclick = async () => {
+  const panel = $("#notifyPanel"); panel.hidden = !panel.hidden;
+  if (!panel.hidden) try { await loadNotify(); } catch (e) { toast(e.message); }
+};
+$("#notifyClose").onclick = () => $("#notifyPanel").hidden = true;
+$("#notifyForm").onsubmit = async e => {
+  e.preventDefault();
+  try { await api("/api/notify/settings", { method: "PUT", body: notifyBody() }); toast("Saved"); } catch (err) { toast(err.message); }
+};
+$("#notifyTest").onclick = async () => {
+  const btn = $("#notifyTest"); btn.disabled = true;
+  try {
+    await api("/api/notify/settings", { method: "PUT", body: notifyBody() });
+    const r = await api("/api/notify/test", { method: "POST" });
+    toast(r.with_snapshot ? "Test sent, with a snapshot" : "Test sent");
+  } catch (e) { toast(e.message); } finally { btn.disabled = false; }
+};
 
 // ---- setup from install.sh ----------------------------------------------------------
 let SETUP = { ui: "basic" };

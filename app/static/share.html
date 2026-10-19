@@ -77,6 +77,8 @@ const LOOK = {
 };
 const fmtDur = s => { if (s == null) return "—"; s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h}h ${m}m` : `${m}m`; };
 const fmtTemp = t => t == null ? "—" : `${Math.round(t)}°`;
+// current / target, target only while heating (numbers only, safe as HTML)
+const fmtTT = (t, tg) => t == null ? "—" : tg > 0 ? `${Math.round(t)}°<span style="color:#8E8A99;font-weight:400"> / ${Math.round(tg)}°</span>` : `${Math.round(t)}°`;
 let camMode = null, snapTimer = null;
 
 function setCamera(p) {
@@ -126,8 +128,8 @@ async function refresh() {
   $("#file").textContent = showPct && p.filename ? p.filename : "";
   $("#left").textContent = online && active ? fmtDur(p.eta) : "—";
   $("#layer").textContent = online && active && p.layer != null ? `${p.layer}${p.total_layers ? " / " + p.total_layers : ""}` : "—";
-  $("#nozzle").textContent = online ? fmtTemp(p.nozzle) : "—";
-  $("#bed").textContent = online ? fmtTemp(p.bed) : "—";
+  $("#nozzle").innerHTML = online ? fmtTT(p.nozzle, p.nozzle_target) : "—";
+  $("#bed").innerHTML = online ? fmtTT(p.bed, p.bed_target) : "—";
   $("#expires").textContent = p.expires_at ? `This link stops working ${new Date(p.expires_at * 1000).toLocaleString()}.` : "";
   setCamera(p);
 }

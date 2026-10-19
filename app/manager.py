@@ -31,6 +31,7 @@ class Manager:
         self.rows: dict[int, dict] = {}
         self._last: dict[int, dict] = {}             # last view per printer, for transition detection
         self._offline_timers: dict[int, asyncio.Task] = {}
+        self._milestone: dict[int, int] = {}         # last progress % announced per printer
         self._subs: set[asyncio.Queue] = set()
 
     async def start(self):
@@ -80,6 +81,11 @@ class Manager:
         self.rows[pid]["cam"] = value
         self._broadcast("printer", self.view(pid))
 
+    def set_notify(self, pid: int, on: bool):
+        self.store.update(pid, notify=1 if on else 0)
+        self.rows[pid]["notify"] = 1 if on else 0
+        self._broadcast("printer", self.view(pid))
+
     def set_order(self, ids: list[int]):
         ids = [i for i in ids if i in self.rows]
         self.store.set_order(ids)
@@ -104,7 +110,7 @@ class Manager:
         return {
             "id": pid, "name": row["name"], "host": row["host"], "port": row["port"],
             "has_api_key": bool(row["api_key"]), "group": row.get("grp"), "position": row.get("position"),
-            "cam_settings": self._cam_settings(row),
+            "cam_settings": self._cam_settings(row), "notify": row.get("notify") != 0,
             **self.clients[pid].view(),
         }
 
@@ -126,6 +132,16 @@ class Manager:
     def _detect(self, pid: int, prev: dict, v: dict):
         if event := _event_for(prev["state"], v["state"]):
             self._emit(pid, event, v)
+            if event == "started":
+                self._milestone[pid] = 0
+        # progress updates (advanced notifications): every N % while printing
+        step = self.notifier.progress_step()
+        if step and v["state"] == "printing" and prev["state"] in ("printing", "paused"):
+            reached = int(v["progress"] * 100) // step * step
+            last = self._milestone.setdefault(pid, reached)
+            if step <= reached < 100 and reached > last:
+                self._milestone[pid] = reached
+                self._emit(pid, "progress", {**v, "milestone": reached})
         # Klipper shut down / errored (MCU shutdown, thermal runaway, ...): wait a moment for the reason
         if v["connection"] == "online" and prev["klippy_state"] == "ready" and v["klippy_state"] in ("shutdown", "error"):
             asyncio.get_running_loop().call_later(
@@ -148,6 +164,8 @@ class Manager:
 
     def _emit(self, pid: int, event: str, v: dict):
         self._broadcast("event", {"id": pid, "event": event, "name": v["name"]})
+        if self.rows.get(pid, {}).get("notify") == 0:   # notifications switched off for this printer
+            return
         if self.notifier.enabled and self.notifier.wants(event):
             asyncio.get_running_loop().create_task(self._notify(pid, event, v))
 
@@ -159,6 +177,11 @@ class Manager:
         name, file = v["name"], v.get("filename") or "unknown file"
         if event == "offline":
             title, parts = f"{name}: went offline mid-print", [file, f"{v['progress'] * 100:.0f}% done"]
+        elif event == "progress":
+            title, parts = f"{name}: {v['milestone']}% done", [file]
+            if v.get("eta"):
+                m = int(v["eta"] // 60)
+                parts.append(f"{m // 60}h {m % 60}m left" if m >= 60 else f"{m}m left")
         elif event == "shutdown":
             title, parts = f"{name}: Klipper {v['klippy_state']}", [v.get("klippy_message") or "no reason given"]
         else:

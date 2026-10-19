@@ -81,6 +81,13 @@
   .nset .checks { display: flex; flex-wrap: wrap; gap: 4px 18px; }
   .nset .checks label { display: flex; align-items: center; gap: 8px; min-height: 40px; font-weight: 400; }
   .nset .checks input { min-height: 0; width: 18px; height: 18px; accent-color: var(--orange); }
+  body.notify-basic .nadv { display: none !important; }
+  .nset fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: grid; gap: 10px; margin: 0; }
+  .nset legend { font-weight: 900; padding: 0 6px; }
+  .nset .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+  .nset select { font: inherit; min-height: 44px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card2); color: var(--text); }
+  .nset .svc-test { justify-self: start; }
+  .nset .active { font-size: 13px; color: var(--muted); }
   .setup-line .soon { color: var(--orange); }
   .fps { position: absolute; top: 10px; right: 62px; padding: 4px 8px; border-radius: 6px; background: rgba(11,11,13,.8);
          font: 700 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text); pointer-events: none; }
@@ -284,6 +291,38 @@
         <input name="discord_webhook" placeholder="https://discord.com/api/webhooks/..." autocomplete="off"></label>
       <div class="field"><strong>Notify me when…</strong><div class="checks" id="eventChecks"></div></div>
       <div class="checks"><label><input type="checkbox" name="attach_snapshot"> Attach a webcam snapshot</label></div>
+
+      <fieldset class="nadv"><legend>Progress updates</legend>
+        <label class="field">Send an update every <select name="progress_step" id="progressStep"></select></label>
+      </fieldset>
+      <fieldset class="nadv"><legend>Telegram</legend>
+        <div class="two">
+          <label class="field">Bot token <input name="telegram_token" type="password" autocomplete="off"></label>
+          <label class="field">Chat ID <input name="telegram_chat" autocomplete="off"></label>
+        </div>
+        <span class="hint">Make a bot with @BotFather, send it a message, then use your chat ID (for example from @userinfobot).</span>
+        <button type="button" class="svc-test" data-test="telegram">Send test to Telegram</button>
+      </fieldset>
+      <fieldset class="nadv"><legend>Pushover</legend>
+        <div class="two">
+          <label class="field">User key <input name="pushover_user" autocomplete="off"></label>
+          <label class="field">App token <input name="pushover_token" type="password" autocomplete="off"></label>
+        </div>
+        <button type="button" class="svc-test" data-test="pushover">Send test to Pushover</button>
+      </fieldset>
+      <fieldset class="nadv"><legend>Email</legend>
+        <div class="two">
+          <label class="field">SMTP server <input name="smtp_host" placeholder="smtp.gmail.com" autocomplete="off"></label>
+          <label class="field">Port <input name="smtp_port" inputmode="numeric" placeholder="587"></label>
+          <label class="field">Security <select name="smtp_tls"><option value="starttls">STARTTLS</option><option value="ssl">SSL/TLS</option><option value="none">None</option></select></label>
+          <label class="field">Login <input name="smtp_user" autocomplete="off"></label>
+          <label class="field">Password <input name="smtp_pass" type="password" autocomplete="off"></label>
+          <label class="field">From <input name="smtp_from" placeholder="same as login" autocomplete="off"></label>
+          <label class="field">Send to <input name="smtp_to" placeholder="you@example.com" autocomplete="off"></label>
+        </div>
+        <button type="button" class="svc-test" data-test="email">Send test email</button>
+      </fieldset>
+      <p class="active" id="notifyActive"></p>
       <div class="row" style="justify-content:flex-end">
         <button type="button" id="notifyClose">Close</button>
         <button type="button" id="notifyTest">Send test</button>
@@ -537,13 +576,14 @@ function render() {
         <dl class="stats"><div><dt>Time left</dt><dd data-f="left"></dd></div>
           <div><dt>Nozzle</dt><dd data-f="nozzle"></dd></div><div><dt>Bed</dt><dd data-f="bed"></dd></div></dl>
         <div class="actions"><button class="primary" data-act="open">Open</button><button class="outline" data-act="qv">Quick View</button></div>
-        <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="group" class="adv">Set group</button><button data-act="camera">Camera settings</button><button data-act="remove" class="danger">Remove</button></div>`;
+        <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="group" class="adv">Set group</button><button data-act="camera">Camera settings</button><button data-act="notify" class="nadv">Notifications: on</button><button data-act="remove" class="danger">Remove</button></div>`;
       const menu = el.querySelector(".menu"), mbtn = el.querySelector(".iconbtn");
       mbtn.onclick = () => { menu.hidden = !menu.hidden; mbtn.setAttribute("aria-expanded", String(!menu.hidden)); };
       el.querySelector("[data-act=rename]").onclick = () => { menu.hidden = true; rename(p.id); };
       el.querySelector("[data-act=remove]").onclick = () => { menu.hidden = true; removePrinter(p.id); };
       el.querySelector("[data-act=group]").onclick = () => { menu.hidden = true; setGroup(p.id); };
       el.querySelector("[data-act=camera]").onclick = () => { menu.hidden = true; openCamDlg(p.id); };
+      el.querySelector("[data-act=notify]").onclick = () => { menu.hidden = true; toggleNotify(p.id); };
       el.addEventListener("dragstart", e => { dragId = p.id; el.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(p.id)); });
       el.addEventListener("dragend", () => { dragId = null; el.classList.remove("dragging"); clearDrop(); });
       el.addEventListener("dragover", e => { if (dragId === null || dragId === p.id) return; e.preventDefault(); clearDrop(); el.classList.add("drop-before"); });
@@ -559,6 +599,7 @@ function render() {
     const showPct = active || p.state === "complete";
     const pct = showPct ? p.progress : 0;
     el.classList.toggle("dim", p.connection !== "online" || p.klippy_state !== "ready");
+    el.querySelector("[data-act=notify]").textContent = `Notifications: ${p.notify === false ? "off" : "on"}`;
 
     const tag = el.querySelector(".tag");
     tag.textContent = tagText; tag.className = `tag ${tagColor}`; tag.title = p.error || "";
@@ -808,6 +849,7 @@ function connectEvents() {
   es.addEventListener("removed", e => { printers.delete(JSON.parse(e.data).id); render(); });
   es.addEventListener("event", e => {
     const d = JSON.parse(e.data);
+    if (d.event === "progress") return;   // progress updates go to phone/chat only
     toast(d.event === "offline" ? `${d.name} went offline mid-print` : d.event === "shutdown" ? `${d.name}: Klipper shut down` : `${d.name}: print ${d.event}`);
   });
 }
@@ -1174,13 +1216,23 @@ async function loadNotify() {
   const c = await api("/api/notify/settings"), f = $("#notifyForm");
   f.ntfy_url.value = c.ntfy_url || ""; f.ntfy_token.value = c.ntfy_token || "";
   f.discord_webhook.value = c.discord_webhook || ""; f.attach_snapshot.checked = !!c.attach_snapshot;
+  for (const k of ["telegram_token", "telegram_chat", "pushover_user", "pushover_token", "smtp_host", "smtp_user", "smtp_pass", "smtp_from", "smtp_to"]) f[k].value = c[k] || "";
+  f.smtp_port.value = c.smtp_port || 587; f.smtp_tls.value = c.smtp_tls || "starttls";
+  $("#progressStep").innerHTML = c.progress_steps.map(n => `<option value="${n}">${n ? n + "%" : "Off"}</option>`).join("");
+  $("#progressStep").value = String(c.progress_step ?? 0);
+  $("#notifyActive").textContent = c.active.length ? `Sending to: ${c.active.join(", ")}` : "No services set up yet.";
   $("#eventChecks").innerHTML = c.all_events.map(e =>
     `<label><input type="checkbox" value="${e}" ${c.events.includes(e) ? "checked" : ""}> ${esc(EVENT_LABELS[e] || e)}</label>`).join("");
 }
 function notifyBody() {
   const f = $("#notifyForm");
-  return JSON.stringify({ ntfy_url: f.ntfy_url.value, ntfy_token: f.ntfy_token.value, discord_webhook: f.discord_webhook.value,
-    attach_snapshot: f.attach_snapshot.checked, events: [...$("#eventChecks").querySelectorAll("input:checked")].map(i => i.value) });
+  const b = { ntfy_url: f.ntfy_url.value, ntfy_token: f.ntfy_token.value, discord_webhook: f.discord_webhook.value,
+    attach_snapshot: f.attach_snapshot.checked, events: [...$("#eventChecks").querySelectorAll("input:checked")].map(i => i.value) };
+  if (SETUP.notify === "advanced") {
+    for (const k of ["telegram_token", "telegram_chat", "pushover_user", "pushover_token", "smtp_host", "smtp_user", "smtp_pass", "smtp_from", "smtp_to", "smtp_tls"]) b[k] = f[k].value;
+    b.smtp_port = f.smtp_port.value || 587; b.progress_step = +f.progress_step.value;
+  }
+  return JSON.stringify(b);
 }
 $("#notifyBtn").onclick = async () => {
   const panel = $("#notifyPanel"); panel.hidden = !panel.hidden;
@@ -1191,6 +1243,20 @@ $("#notifyForm").onsubmit = async e => {
   e.preventDefault();
   try { await api("/api/notify/settings", { method: "PUT", body: notifyBody() }); toast("Saved"); } catch (err) { toast(err.message); }
 };
+for (const btn of document.querySelectorAll("[data-test]")) btn.onclick = async () => {
+  btn.disabled = true;
+  try {
+    await api("/api/notify/settings", { method: "PUT", body: notifyBody() });
+    const r = await api("/api/notify/test", { method: "POST", body: JSON.stringify({ service: btn.dataset.test }) });
+    toast(`Test sent to ${btn.dataset.test}${r.with_snapshot ? ", with a snapshot" : ""}`); loadNotify();
+  } catch (e) { toast(e.message); } finally { btn.disabled = false; }
+};
+async function toggleNotify(id) {
+  const p = printers.get(id); if (!p) return;
+  try { printers.set(id, await api(`/api/printers/${id}`, { method: "PATCH", body: JSON.stringify({ notify: p.notify === false }) })); render();
+        toast(`Notifications for ${p.name}: ${p.notify === false ? "on" : "off"}`); }
+  catch (e) { toast(e.message); }
+}
 $("#notifyTest").onclick = async () => {
   const btn = $("#notifyTest"); btn.disabled = true;
   try {
@@ -1209,6 +1275,7 @@ async function loadConfig() {
     const cfg = await api("/api/config");
     SETUP = cfg.setup;
     document.body.classList.toggle("ui-basic", isBasic());
+    document.body.classList.toggle("notify-basic", SETUP.notify !== "advanced");
     if (isBasic()) {
       $("#grid").classList.remove("list");
       if ($("#sortBy").value === "custom") { $("#sortBy").value = "status"; arrange(); }
@@ -1219,7 +1286,7 @@ async function loadConfig() {
       + " — run ./install.sh to change";
   } catch {}
 }
-document.body.classList.add("ui-basic");
+document.body.classList.add("ui-basic", "notify-basic");
 loadConfig();
 
 connectEvents();

@@ -17,7 +17,7 @@ from starlette.routing import Route
 from . import discovery
 from .manager import Manager
 from .net import http_get
-from .notify import ALL_EVENTS, Notifier
+from .notify import ALL_EVENTS, PROGRESS_STEPS, SERVICES, Notifier, advanced as notify_advanced
 from .store import Store
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -110,7 +110,9 @@ async def update_printer(request: Request):
     if pid is None:
         return err("not found", 404)
     b = await body(request)
-    if "name" not in b and "group" not in b and "camera" not in b:
+    if "notify" in b:
+        manager.set_notify(pid, bool(b["notify"]))
+    if "name" not in b and "group" not in b and "camera" not in b and "notify" not in b:
         return err("nothing to change")
     if "camera" in b:
         c = b.get("camera")
@@ -338,7 +340,8 @@ async def events(request: Request):
 
 
 async def get_notify_settings(request: Request):
-    return JSONResponse({**manager.notifier.config(), "all_events": ALL_EVENTS})
+    return JSONResponse({**manager.notifier.config(), "all_events": ALL_EVENTS, "progress_steps": PROGRESS_STEPS,
+                         "advanced": notify_advanced(), "active": manager.notifier.targets()})
 
 
 async def save_notify_settings(request: Request):
@@ -356,18 +359,41 @@ async def save_notify_settings(request: Request):
         values["events"] = [e for e in b["events"] if e in ALL_EVENTS]
     if "attach_snapshot" in b:
         values["attach_snapshot"] = bool(b["attach_snapshot"])
+    for k in ("telegram_token", "telegram_chat", "pushover_user", "pushover_token",
+              "smtp_host", "smtp_user", "smtp_pass", "smtp_from", "smtp_to"):
+        if k in b:
+            values[k] = str(b[k] or "").strip()
+    if "smtp_port" in b:
+        try:
+            values["smtp_port"] = int(b["smtp_port"] or 587)
+        except (TypeError, ValueError):
+            return err("SMTP port must be a number")
+    if "smtp_tls" in b:
+        if b["smtp_tls"] not in ("starttls", "ssl", "none"):
+            return err("bad SMTP security option")
+        values["smtp_tls"] = b["smtp_tls"]
+    if "progress_step" in b:
+        if b["progress_step"] not in PROGRESS_STEPS:
+            return err("bad progress step")
+        values["progress_step"] = b["progress_step"]
     store.save_settings(values)
     return await get_notify_settings(request)
 
 
 async def test_notification(request: Request):
-    if not manager.notifier.enabled:
-        return err("add an ntfy topic URL or a Discord webhook first")
+    only = (await body(request)).get("service")
+    if only is not None and only not in SERVICES:
+        return err("unknown service")
+    active = manager.notifier.targets()
+    if only and only not in active:
+        return err(f"fill in the {only} settings and save first")
+    if not active:
+        return err("add a notification service first")
     image = None
     for pid in list(manager.clients):
         if image := await manager.snapshot(pid):
             break
-    errors = await manager.notifier.send("Printer Buddy", "Test notification - it works!", image)
+    errors = await manager.notifier.send("Printer Buddy", "Test notification - it works!", image, only=only)
     if errors:
         return err("; ".join(errors), 502)
     return JSONResponse({"ok": True, "with_snapshot": bool(image)})
@@ -382,7 +408,7 @@ SETUP = {
     "remote": ("PB_REMOTE", ("off", "on")),
     "users": ("PB_USERS", ("single", "multi")),
 }
-BUILT = {"ui.basic", "ui.advanced", "ai.off", "video.snapshots", "notify.basic", "remote.off", "users.single"}
+BUILT = {"ui.basic", "ui.advanced", "ai.off", "video.snapshots", "notify.basic", "notify.advanced", "remote.off", "users.single"}
 
 
 def setup() -> dict:

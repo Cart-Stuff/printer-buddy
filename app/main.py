@@ -139,6 +139,23 @@ async def snapshot(request: Request):
                     headers={"Cache-Control": "no-store"})
 
 
+async def printer_action(request: Request):
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    action = request.path_params["action"]
+    if action not in ("pause", "resume", "cancel", "estop"):
+        return err("unknown action")
+    client = manager.clients[pid]
+    if client.connection != "online":
+        return err("printer is offline", 409)
+    try:
+        await client.command(action)
+    except Exception as e:
+        return err(str(e) or type(e).__name__, 502)
+    return JSONResponse({"ok": True})
+
+
 # ---- live updates (Server-Sent Events) -----------------------------------------
 async def events(request: Request):
     q = manager.subscribe()
@@ -187,6 +204,7 @@ app = Starlette(routes=[
     Route("/api/printers/{pid:int}", update_printer, methods=["PATCH"]),
     Route("/api/printers/{pid:int}", delete_printer, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/snapshot", snapshot),
+    Route("/api/printers/{pid:int}/{action}", printer_action, methods=["POST"]),
     Route("/api/events", events),
     Route("/api/notify/test", test_notification, methods=["POST"]),
 ], lifespan=lifespan)

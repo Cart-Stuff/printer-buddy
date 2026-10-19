@@ -69,6 +69,31 @@
   .empty { text-align: center; padding: 48px 16px; }
   #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
            padding: 10px 16px; border-radius: 8px; font-weight: 700; display: none; max-width: calc(100% - 32px); }
+  .actions { padding: 0 14px 14px; margin-top: auto; }
+  .actions button { width: 100%; background: transparent; border: 1.5px solid var(--orange); color: var(--orange); font-weight: 900; }
+  dialog#qv { width: min(980px, calc(100% - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 14px;
+              background: var(--card); color: var(--text); }
+  dialog#qv::backdrop { background: rgba(5,5,7,.88); }
+  .qv-head { display: flex; align-items: center; gap: 12px; padding: 12px 14px 12px 20px; }
+  .qv-head h2 { margin: 0; font-size: 22px; font-weight: 900; }
+  .qv-head .tag { position: static; }
+  .qv-head .spacer { flex-grow: 1; }
+  .qv-close { width: 44px; padding: 0; display: flex; align-items: center; justify-content: center; }
+  .qv-cam { position: relative; aspect-ratio: 16 / 9; background: #000; }
+  .qv-cam img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .qv-cam .nocam { color: var(--muted); }
+  .qv-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 28px; padding: 18px 20px 20px; }
+  .qv-info { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .qv-info .line { font-weight: 700; }
+  .qv-info .sub { font-size: 14px; color: var(--muted); overflow-wrap: anywhere; }
+  .qv-temps { margin: 0; display: flex; gap: 28px; }
+  .qv-temps div { display: flex; flex-direction: column; gap: 2px; }
+  .qv-temps dt { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .qv-temps dd { margin: 0; font-size: 18px; font-weight: 700; }
+  .qv-btns { display: flex; gap: 8px; }
+  .qv-btns button { min-height: 48px; font-weight: 900; }
+  .qv-btns .outline { background: transparent; border: 1.5px solid var(--orange); color: var(--orange); }
+  .qv-btns .stop { background: var(--red); color: #fff; }
 </style>
 </head>
 <body>
@@ -106,6 +131,25 @@
     <p class="muted">Scan your network to find printers running Moonraker, then pick the ones to monitor.</p>
   </div>
 </main>
+
+<dialog id="qv" aria-labelledby="qvName">
+  <div class="qv-head">
+    <h2 id="qvName"></h2><span class="tag" id="qvTag"></span>
+    <span class="spacer"></span>
+    <button class="qv-close" id="qvClose" aria-label="Close Quick View"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+  </div>
+  <div class="qv-cam"><img id="qvImg" alt="Webcam" hidden><div class="nocam" id="qvNoCam">No camera</div></div>
+  <div class="bar"><div id="qvBar"></div></div>
+  <div class="qv-foot">
+    <div class="qv-info"><span class="line" id="qvLine"></span><span class="sub" id="qvSub"></span></div>
+    <dl class="qv-temps"><div><dt>Nozzle</dt><dd id="qvNozzle"></dd></div><div><dt>Bed</dt><dd id="qvBed"></dd></div></dl>
+    <div class="qv-btns">
+      <button class="primary" id="qvPause">Pause</button>
+      <button class="outline" id="qvCancel">Cancel</button>
+      <button class="stop" id="qvStop">E-Stop</button>
+    </div>
+  </div>
+</dialog>
 <div id="toast"></div>
 
 <script>
@@ -169,11 +213,13 @@ function render() {
         <div class="status"></div>
         <dl class="stats"><div><dt>Time left</dt><dd data-f="left"></dd></div>
           <div><dt>Nozzle</dt><dd data-f="nozzle"></dd></div><div><dt>Bed</dt><dd data-f="bed"></dd></div></dl>
+        <div class="actions"><button data-act="qv">Quick View</button></div>
         <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="remove" class="danger">Remove</button></div>`;
       const menu = el.querySelector(".menu"), mbtn = el.querySelector(".iconbtn");
       mbtn.onclick = () => { menu.hidden = !menu.hidden; mbtn.setAttribute("aria-expanded", String(!menu.hidden)); };
       el.querySelector("[data-act=rename]").onclick = () => { menu.hidden = true; rename(p.id); };
       el.querySelector("[data-act=remove]").onclick = () => { menu.hidden = true; removePrinter(p.id); };
+      el.querySelector("[data-act=qv]").onclick = () => openQV(p.id);
       grid.append(el);
     }
     const st = statusOf(p);
@@ -210,6 +256,7 @@ function render() {
     nocam.querySelector("span").textContent = !live ? "Can't reach printer" : "No camera";
     if (p.has_webcam && !img.src) img.src = `/api/printers/${p.id}/snapshot?t=${Date.now()}`;
   }
+  renderQV();
 }
 setInterval(() => {   // refresh webcam snapshots
   if (document.hidden) return;
@@ -288,6 +335,56 @@ $("#manualForm").onsubmit = async e => {
     printers.set(v.id, v); render(); e.target.reset(); $("#manual").hidden = true; toast(`Added ${v.name}`);
   } catch (err) { toast(err.message); }
 };
+
+// ---- Quick View ----------------------------------------------------------------
+let qvId = null;
+function openQV(id) {
+  qvId = id; $("#qvImg").removeAttribute("src"); renderQV();
+  refreshQVCam(); $("#qv").showModal();
+}
+function refreshQVCam() {
+  const p = printers.get(qvId);
+  if (p && p.has_webcam && p.connection === "online") $("#qvImg").src = `/api/printers/${p.id}/snapshot?t=${Date.now()}`;
+}
+function renderQV() {
+  if (qvId === null) return;
+  const p = printers.get(qvId);
+  if (!p) { $("#qv").close(); return; }
+  const st = statusOf(p);
+  const [tagText, tagColor, barColor, statusText, statusColor] = look(st);
+  const live = p.connection === "online";
+  const active = p.state === "printing" || p.state === "paused";
+  const pct = active || p.state === "complete" ? p.progress : 0;
+  $("#qvName").textContent = p.name;
+  const tag = $("#qvTag"); tag.textContent = tagText; tag.className = `tag ${tagColor}`;
+  const camOk = p.has_webcam && live;
+  $("#qvImg").hidden = !camOk; $("#qvNoCam").hidden = camOk;
+  $("#qvNoCam").textContent = live ? "No camera" : "Can't reach printer";
+  $("#qvBar").style.width = `${pct * 100}%`; $("#qvBar").style.background = barColor;
+  const line = $("#qvLine"); line.textContent = (p.state === "error" && p.message) || statusText; line.style.color = statusColor;
+  $("#qvSub").textContent = [p.filename, active || p.state === "complete" ? `${Math.floor(pct * 100)}%` : null,
+                             active ? `${fmtDur(p.eta)} left` : null].filter(Boolean).join(" · ");
+  $("#qvNozzle").textContent = live ? fmtTemp(p.nozzle) : "—";
+  $("#qvBed").textContent = live ? fmtTemp(p.bed) : "—";
+  const pause = $("#qvPause");
+  pause.textContent = p.state === "paused" ? "Resume" : "Pause";
+  pause.disabled = !live || !active;
+  $("#qvCancel").disabled = !live || !active;
+  $("#qvStop").disabled = !live;
+}
+async function qvAction(action) {
+  const p = printers.get(qvId); if (!p) return;
+  if (action === "cancel" && !confirm(`Cancel the print on ${p.name}?`)) return;
+  if (action === "estop" && !confirm(`Emergency stop ${p.name}? This halts the printer immediately and Klipper will need a restart.`)) return;
+  try { await api(`/api/printers/${p.id}/${action}`, { method: "POST" }); }
+  catch (e) { toast(`${p.name}: ${e.message}`); }
+}
+$("#qvClose").onclick = () => $("#qv").close();
+$("#qv").addEventListener("close", () => { qvId = null; });
+$("#qvPause").onclick = () => qvAction(printers.get(qvId)?.state === "paused" ? "resume" : "pause");
+$("#qvCancel").onclick = () => qvAction("cancel");
+$("#qvStop").onclick = () => qvAction("estop");
+setInterval(() => { if (qvId !== null && !document.hidden) refreshQVCam(); }, 2000);
 
 connectEvents();
 render();

@@ -211,6 +211,12 @@ class MoonrakerClient:
             self.webcams = []
         self._changed()
 
+    async def command(self, action: str):
+        """pause / resume / cancel / estop"""
+        methods = {"pause": "printer.print.pause", "resume": "printer.print.resume",
+                   "cancel": "printer.print.cancel", "estop": "printer.emergency_stop"}
+        return await self._call(methods[action], timeout=15)
+
     # state ------------------------------------------------------------------
     def _set(self, **kw):
         for k, v in kw.items():

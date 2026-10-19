@@ -28,6 +28,17 @@ from . import collect as collect_mod
 from .collect import Collector
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+class _QuietShutdown(logging.Filter):
+    """On restart, uvicorn cuts open live-update connections after 3 s (--timeout-graceful-shutdown) and logs
+    each one as a long CancelledError traceback. That's expected, not an error: drop just those records."""
+    def filter(self, record):
+        exc = record.exc_info[1] if record.exc_info else None
+        return not isinstance(exc, asyncio.CancelledError)
+
+
+logging.getLogger("uvicorn.error").addFilter(_QuietShutdown())
 STATIC = Path(__file__).parent / "static"
 
 store = Store(os.getenv("DB_PATH", "data/monitor.db"))

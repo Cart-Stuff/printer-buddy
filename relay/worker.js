@@ -14,6 +14,8 @@
 //     add an AAAA record: name www, value 100::, proxied.
 //  4. Optional: Worker > Settings > Variables: SHARE_DOMAIN = printerbuddy.stream
 //     (otherwise it's taken from the address the viewer used).
+//
+// Automatic tunnel setup (/api/tunnel) needs a few more settings: see relay/README.md.
 
 const SHARE = /^\/share\/user\/(\d{6,10})\/(printer\/\d{1,9}\/[A-Za-z0-9_-]{20,100}(?:\/(?:status|snapshot|stream))?)\/?$/;
 
@@ -26,8 +28,9 @@ h1{margin:0 0 8px;font-size:26px}p{margin:0;color:#8E8A99}b{color:#FF8A1F}</styl
   { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex" } });
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === "/api/tunnel") return tunnelApi(request, env, ctx, url);
     const m = url.pathname.match(SHARE);
     if (!m) {
       if (url.pathname === "/") return page("Printer Buddy", "Self-hosted 3D printer monitoring. Open a share link to watch a printer.", 200);
@@ -70,4 +73,144 @@ function offline(path) {
       { status: 503, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   }
   return page("Printer is offline", "This printer's box isn't reachable right now. Try again in a little while.", 503);
+}
+
+// ---------------------------------------------------------------- automatic tunnels
+// A box asks for its tunnel:   POST   /api/tunnel  {"id": "1234567", "port": 8080, "key": "<box key, after the first time>"}
+//   -> creates tunnel "pb-u<id>" routing https://u<id>.<domain>/share/... to http://localhost:<port>,
+//      plus the DNS record, and returns {"token", "key", "hostname"}. Asking again (with the key) reuses
+//      the same tunnel and updates the port if it changed.
+// A box removes its tunnel:    DELETE /api/tunnel  {"id": "...", "key": "..."}
+// Only the box holding the key can change or delete its tunnel.
+//
+// Needs (Worker > Settings): secrets CF_API_TOKEN, DISCORD_WEBHOOK (optional); variables CF_ACCOUNT_ID,
+// CF_ZONE_ID, SHARE_DOMAIN, MAX_TUNNELS (optional, default 500), NEW_PER_IP_PER_DAY (optional, default 5);
+// KV binding BOXES.
+
+const json = (data, status = 200) => new Response(JSON.stringify(data),
+  { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+
+async function sha256(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function newKey() {
+  const b = new Uint8Array(32);
+  crypto.getRandomValues(b);
+  return [...b].map(x => x.toString(16).padStart(2, "0")).join("");
+}
+
+async function cf(env, method, path, body) {
+  const r = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
+    method,
+    headers: { authorization: `Bearer ${env.CF_API_TOKEN}`, "content-type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.success === false) {
+    const err = new Error((j.errors || []).map(e => `${e.code}: ${e.message}`).join("; ") || `Cloudflare HTTP ${r.status}`);
+    err.status = r.status;
+    throw err;
+  }
+  return j.result;
+}
+
+function routing(env, id, host, port) {
+  return cf(env, "PUT", `/accounts/${env.CF_ACCOUNT_ID}/cfd_tunnel/${id}/configurations`, {
+    config: { ingress: [
+      { hostname: host, path: "^/share/", service: `http://localhost:${port}`, originRequest: {} },
+      { service: "http_status:404" },
+    ] },
+  });
+}
+
+async function dnsRecord(env, host) {
+  const list = await cf(env, "GET", `/zones/${env.CF_ZONE_ID}/dns_records?type=CNAME&name=${encodeURIComponent(host)}`);
+  return (list || [])[0] || null;
+}
+
+async function pointDns(env, host, tunnelId) {
+  const rec = { type: "CNAME", name: host, content: `${tunnelId}.cfargotunnel.com`, proxied: true };
+  const old = await dnsRecord(env, host);
+  if (old) return cf(env, "PUT", `/zones/${env.CF_ZONE_ID}/dns_records/${old.id}`, rec);
+  return cf(env, "POST", `/zones/${env.CF_ZONE_ID}/dns_records`, rec);
+}
+
+async function tunnelApi(request, env, ctx, url) {
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID || !env.CF_ZONE_ID || !env.BOXES) {
+    return json({ error: "Automatic setup isn't configured on this server yet." }, 503);
+  }
+  if (request.method !== "POST" && request.method !== "DELETE") return json({ error: "Method not allowed" }, 405);
+  let b;
+  try { b = await request.json(); } catch { return json({ error: "Bad request" }, 400); }
+  const id = String(b.id || "");
+  if (!/^\d{6,10}$/.test(id)) return json({ error: "Bad Printer Buddy ID" }, 400);
+  const domain = (env.SHARE_DOMAIN || url.hostname).replace(/^www\./, "");
+  const host = `u${id}.${domain}`;
+  const kvKey = `box:${id}`;
+  const box = await env.BOXES.get(kvKey, "json");
+
+  if (box && (typeof b.key !== "string" || (await sha256(b.key)) !== box.key_hash)) {
+    return json({ error: "This Printer Buddy ID is already set up on another box (or this box lost its key). " +
+                        "Remove PB_USER_ID and PB_TUNNEL_KEY from printer-buddy.env to get a new ID." }, 403);
+  }
+
+  try {
+    if (request.method === "DELETE") {
+      if (!box) return json({ ok: true, note: "nothing to remove" });
+      const rec = await dnsRecord(env, host);
+      if (rec) await cf(env, "DELETE", `/zones/${env.CF_ZONE_ID}/dns_records/${rec.id}`);
+      try {
+        await cf(env, "DELETE", `/accounts/${env.CF_ACCOUNT_ID}/cfd_tunnel/${box.tunnel_id}`);
+      } catch (e) {
+        return json({ error: `The tunnel is still connected. Stop cloudflared on the box and try again in a minute. (${e.message})` }, 409);
+      }
+      await env.BOXES.delete(kvKey);
+      return json({ ok: true });
+    }
+
+    const port = Number(b.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return json({ error: "Bad port" }, 400);
+
+    // already set up: reuse, update the port if it changed
+    if (box) {
+      if (box.port !== port) {
+        await routing(env, box.tunnel_id, host, port);
+        box.port = port;
+      }
+      box.updated = Date.now();
+      await env.BOXES.put(kvKey, JSON.stringify(box));
+      return json({ token: box.token, hostname: host });
+    }
+
+    // new box: limits first
+    const ip = request.headers.get("cf-connecting-ip") || "unknown";
+    const day = new Date().toISOString().slice(0, 10);
+    const ipKey = `ip:${ip}:${day}`;
+    const perIp = Number(await env.BOXES.get(ipKey) || 0);
+    if (perIp >= Number(env.NEW_PER_IP_PER_DAY || 5)) return json({ error: "Too many new boxes from this network today. Try again tomorrow." }, 429);
+    const total = Number(await env.BOXES.get("count") || 0);
+    if (total >= Number(env.MAX_TUNNELS || 500)) return json({ error: "Wireless sharing is full right now. Please tell the Printer Buddy team." }, 503);
+
+    const t = await cf(env, "POST", `/accounts/${env.CF_ACCOUNT_ID}/cfd_tunnel`, { name: `pb-u${id}`, config_src: "cloudflare" });
+    await routing(env, t.id, host, port);
+    await pointDns(env, host, t.id);
+
+    const key = newKey();
+    await env.BOXES.put(kvKey, JSON.stringify({ tunnel_id: t.id, token: t.token, key_hash: await sha256(key),
+                                                port, created: Date.now(), updated: Date.now() }));
+    await env.BOXES.put(ipKey, String(perIp + 1), { expirationTtl: 2 * 24 * 3600 });
+    await env.BOXES.put("count", String(total + 1));
+
+    if (env.DISCORD_WEBHOOK) {
+      ctx.waitUntil(fetch(env.DISCORD_WEBHOOK, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: `Box ${id} set up wireless sharing!` }),
+      }).catch(() => {}));
+    }
+    return json({ token: t.token, key, hostname: host }, 201);
+  } catch (e) {
+    return json({ error: `Cloudflare said: ${e.message}` }, 502);
+  }
 }

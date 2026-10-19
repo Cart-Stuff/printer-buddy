@@ -153,8 +153,11 @@ change_port() {
   [ "$p" = "$(current_port)" ] && { echo "That's already the port. Nothing changed."; return 0; }
   set_env PORT "$p"; echo "Saved PORT=$p to printer-buddy.env"
   if installed; then hard_restart && echo "Printer Buddy is now at $(url)"; fi
-  if [ "$(tunnel_state)" != "not set up" ]; then
-    echo "Your remote-access tunnel still points at the old port. Ask the admin to change its Service to: HTTP localhost:$p"
+  if [ -n "$(get_env PB_TUNNEL_KEY)" ]; then
+    echo "Updating your share-link tunnel to the new port..."
+    tunnel_call POST >/dev/null && echo "Tunnel updated." || echo "Couldn't update the tunnel; try Remote access > 1) Set up automatically."
+  elif [ "$(tunnel_state)" != "not set up" ]; then
+    echo "Your share-link tunnel still points at the old port. Run Remote access > 1) Set up automatically to update it."
   fi
 }
 
@@ -361,39 +364,62 @@ install_cloudflared() {
     && sudo dpkg -i "$tmp" >/dev/null || { rm -f "$tmp"; echo "Couldn't install cloudflared."; return 1; }
   rm -f "$tmp"
 }
-tunnel_instructions() {
-  local uid port; uid="$(user_id)"; port="$(get_env PORT)"
-  echo
-  echo "Send this to the Printer Buddy admin (it's not secret):"
-  echo "  Printer Buddy ID: $uid"
-  echo
-  echo "Admin: in Cloudflare Zero Trust > Networks > Tunnels, create a tunnel for this box and add a public hostname:"
-  echo "  Subdomain: u$uid    Domain: $(share_domain)    Path: ^/share/"
-  echo "  Service:   HTTP  localhost:${port:-8080}"
-  echo "Then send back the tunnel token (the long string after --token)."
-}
-set_tunnel_token() {
-  install_cloudflared || return 1
-  tunnel_instructions
-  echo
-  local token; read -r -s -p "Paste the tunnel token (hidden, Enter to cancel): " token </dev/tty || token=""; echo
-  [ -n "$token" ] || { echo "Nothing changed."; return 0; }
+start_tunnel() {   # (re)install the cloudflared service with token $1
   if [ "$(tunnel_state)" != "not set up" ]; then sudo cloudflared service uninstall >/dev/null 2>&1; fi
-  if sudo cloudflared service install "$token" >/dev/null 2>&1; then
+  if sudo cloudflared service install "$1" >/dev/null 2>&1; then
     sleep 3
     if systemctl is-active --quiet cloudflared; then echo "Tunnel is running."
-    else echo "The tunnel was set up but isn't running yet. Check the token, or see: journalctl -u cloudflared -n 30"; fi
+    else echo "The tunnel was set up but isn't running yet. See: journalctl -u cloudflared -n 30"; fi
   else
     echo "cloudflared didn't accept that token. Nothing else was changed."; return 1
   fi
   if [ "$(part_value "${PARTS[4]}")" != "on" ]; then
     yesno "Remote access is off in your setup, so share links won't work. Turn it on now?" && { set_env PB_REMOTE on; installed && hard_restart; }
   fi
+  return 0
+}
+# automatic setup: the printerbuddy.stream server makes this box's tunnel (relay/worker.js /api/tunnel)
+tunnel_api() { local a; a="$(get_env PB_TUNNEL_API)"; echo "${a:-https://www.$(share_domain)/api/tunnel}"; }
+json_get() { python3 -c 'import sys, json
+try: print(json.load(sys.stdin).get(sys.argv[1]) or "")
+except Exception: print("")' "$1"; }
+tunnel_call() {   # POST (create / update port) or DELETE; prints the server's JSON reply, fails with its error
+  local method="$1" uid port key body resp code err
+  uid="$(user_id)"; port="$(current_port)"; key="$(get_env PB_TUNNEL_KEY)"
+  body="{\"id\": \"$uid\", \"port\": $port${key:+, \"key\": \"$key\"}}"
+  resp="$(curl -sS --max-time 90 -X "$method" -H "content-type: application/json" -d "$body" -w '\n%{http_code}' "$(tunnel_api)" 2>&1)" \
+    || { echo "Couldn't reach $(tunnel_api): $resp" >&2; return 1; }
+  code="${resp##*$'\n'}"; resp="${resp%$'\n'*}"
+  if [ "${code:0:1}" != "2" ]; then
+    err="$(json_get error <<<"$resp")"
+    echo "Setup server said: ${err:-HTTP $code}" >&2; return 1
+  fi
+  echo "$resp"
+}
+auto_tunnel() {
+  install_cloudflared || return 1
+  echo "Setting up wireless sharing for box $(user_id) on port $(current_port)..."
+  local resp token key
+  resp="$(tunnel_call POST)" || return 1
+  token="$(json_get token <<<"$resp")"; key="$(json_get key <<<"$resp")"
+  [ -n "$token" ] || { echo "The setup server didn't send a tunnel token."; return 1; }
+  [ -n "$key" ] && set_env PB_TUNNEL_KEY "$key"   # only sent the first time; keeps this box in charge of its tunnel
+  start_tunnel "$token" || return 1
+  echo "Share links now work from anywhere: https://www.$(share_domain)/share/user/$(user_id)/..."
 }
 remove_tunnel() {
-  [ "$(tunnel_state)" = "not set up" ] && { echo "No tunnel is set up."; return 0; }
+  local key; key="$(get_env PB_TUNNEL_KEY)"
+  [ "$(tunnel_state)" = "not set up" ] && [ -z "$key" ] && { echo "No tunnel is set up."; return 0; }
   yesno "Remove the tunnel? Share links will stop working from outside." || { echo "Nothing changed."; return 0; }
-  sudo cloudflared service uninstall >/dev/null 2>&1 && echo "Tunnel removed."
+  [ "$(tunnel_state)" != "not set up" ] && sudo cloudflared service uninstall >/dev/null 2>&1 && echo "Tunnel stopped on this box."
+  if [ -n "$key" ]; then
+    echo "Removing it from the server..."
+    local i; for i in 1 2 3; do
+      if tunnel_call DELETE >/dev/null; then set_env PB_TUNNEL_KEY ""; echo "Tunnel removed."; return 0; fi
+      [ $i -lt 3 ] && { echo "Retrying in 20 s..."; sleep 20; }
+    done
+    echo "The server still has it. Try 2) Remove tunnel again in a few minutes."; return 1
+  fi
 }
 remote_menu() {
   local c
@@ -406,15 +432,13 @@ remote_menu() {
     row "Links look like:"
     row "  https://www.$(share_domain)/share/user/$(user_id)/..."
     hr
-    row "1) Set up / replace tunnel token"
-    row "2) Show what to send the admin"
-    row "3) Remove tunnel"
+    row "1) Set up automatically"
+    row "2) Remove tunnel"
     row ""; row "B) Back"; bottom
     c="$(ask "Perform action: ")"
     case "$c" in
-      1) set_tunnel_token; pause ;;
-      2) tunnel_instructions; pause ;;
-      3) remove_tunnel; pause ;;
+      1) auto_tunnel; pause ;;
+      2) remove_tunnel; pause ;;
       b|back|"") return ;;
     esac
   done

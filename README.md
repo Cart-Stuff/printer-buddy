@@ -27,6 +27,12 @@ cd printer-buddy && ./update.sh     # git pull + restart
 Logs: `journalctl -u printer-buddy -f`.
 Docker is still supported if you want it: `docker compose up -d --build`.
 
+## AI failure detection
+
+Printer Buddy's own model scores camera snapshots for spaghetti, warping, first-layer problems,
+stringing, blobs and cracks. See **[AI.md](AI.md)** for how it works, test results, limits and
+dataset credits. Models: [releases tagged `ai-`](https://github.com/sterling5241/printer-buddy/releases?q=ai-&expanded=true).
+
 ## How it works
 
 1. **Scan network** sweeps the box's /24 on ports 7125 and 80 and listens for Moonraker's mDNS

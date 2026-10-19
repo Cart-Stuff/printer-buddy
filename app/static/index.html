@@ -3,71 +3,90 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Printer Monitor</title>
+<title>Printer Buddy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #f5f6f8; --card: #ffffff; --text: #16181d; --muted: #6b7280; --border: #e3e5ea;
-    --accent: #2563eb; --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --track: #e5e7eb;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #0f1115; --card: #181b21; --text: #e8eaee; --muted: #9aa1ad; --border: #2a2f38;
-            --accent: #60a5fa; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --track: #2a2f38; }
+    --bg: #0B0B0D; --card: #17161B; --card2: #1F1E24; --line: #26242C; --track: #2A2830;
+    --text: #F4F2F8; --muted: #8E8A99; --purple: #7C3AED; --lilac: #C4A7FF;
+    --orange: #FF8A1F; --red: #C9372C; --red-text: #FF6B61;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
-  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
-           padding: 16px; border-bottom: 1px solid var(--border); background: var(--card); }
-  h1 { font-size: 18px; margin: 0; }
-  main { max-width: 1200px; margin: 0 auto; padding: 16px; }
-  button { font: inherit; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border);
-           background: var(--card); color: var(--text); cursor: pointer; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.4 Lato, system-ui, -apple-system, Segoe UI, sans-serif; }
+  main { max-width: 1500px; margin: 0 auto; padding: 24px 24px 48px; }
+  .top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 16px; margin-bottom: 24px; }
+  h1 { margin: 0; font-size: 24px; font-weight: 900; }
+  h1 span { color: var(--orange); }
+  button { font: inherit; font-weight: 700; min-height: 44px; padding: 0 16px; border-radius: 8px; border: 0;
+           background: var(--card2); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--purple); color: #fff; font-weight: 900; }
   button:disabled { opacity: .55; cursor: default; }
-  input { font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border);
+  input { font: inherit; min-height: 44px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line);
           background: var(--bg); color: var(--text); min-width: 0; }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
-  .panel h2 { font-size: 15px; margin: 0 0 12px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 20px; }
+  .panel h2 { font-size: 16px; margin: 0 0 12px; }
   .muted { color: var(--muted); }
   .found { display: grid; gap: 8px; }
   .found label { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center;
-                 padding: 10px; border: 1px solid var(--border); border-radius: 10px; }
+                 padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
   .found .key { grid-column: 2 / -1; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-  .card .cam { aspect-ratio: 16/9; background: #000; display: block; width: 100%; object-fit: cover; }
-  .card .body { padding: 14px; display: grid; gap: 8px; }
-  .card .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-  .name { font-weight: 600; cursor: text; }
-  .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
-  .s-printing { color: var(--accent); } .s-complete, .s-standby { color: var(--ok); }
-  .s-paused { color: var(--warn); } .s-error, .s-offline, .s-auth_error, .s-shutdown { color: var(--bad); }
-  .bar { height: 8px; background: var(--track); border-radius: 999px; overflow: hidden; }
-  .bar > div { height: 100%; background: var(--accent); transition: width .5s; }
-  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 14px; font-variant-numeric: tabular-nums; }
-  .file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
-  .actions { display: flex; justify-content: flex-end; }
-  .actions button { font-size: 13px; padding: 4px 10px; }
+
+  .grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 24px; }
+  .card { flex: 0 1 340px; min-width: 280px; background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+          overflow: hidden; display: flex; flex-direction: column; position: relative; }
+  .cam { position: relative; aspect-ratio: 4 / 3; background: var(--card2); }
+  .cam img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .nocam { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+           gap: 10px; color: var(--muted); font-weight: 700; }
+  .tag { position: absolute; left: 10px; top: 10px; padding: 5px 10px; border-radius: 6px; font-size: 13px; font-weight: 900;
+         letter-spacing: .04em; text-transform: uppercase; background: var(--track); color: var(--text); }
+  .tag.orange { background: var(--orange); color: #1A1005; }
+  .tag.purple { background: var(--purple); color: #fff; }
+  .tag.red { background: var(--red); color: #fff; }
+  .tag.grey { color: var(--muted); }
+  .iconbtn { position: absolute; right: 10px; top: 10px; width: 44px; padding: 0; display: flex; align-items: center;
+             justify-content: center; background: rgba(11,11,13,.8); }
+  .caption { position: absolute; left: 0; right: 0; bottom: 0; padding: 28px 14px 12px; display: flex; align-items: flex-end;
+             justify-content: space-between; gap: 12px; background: linear-gradient(to top, rgba(11,11,13,.92), rgba(11,11,13,0)); }
+  .caption .name { font-size: 20px; font-weight: 900; text-shadow: 0 1px 3px rgba(0,0,0,.6); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .caption .pct { font-size: 26px; font-weight: 900; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+  .bar { height: 6px; background: var(--track); }
+  .bar > div { height: 100%; width: 0; transition: width .5s; }
+  .status { padding: 12px 14px 0; font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status .file { color: var(--muted); font-weight: 400; }
+  .stats { margin: 0; padding: 10px 14px 14px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .stats div { display: flex; flex-direction: column; gap: 2px; }
+  .stats dt { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .stats dd { margin: 0; font-weight: 700; }
+  .menu { position: absolute; right: 10px; top: 60px; background: var(--card2); border: 1px solid var(--line); border-radius: 10px;
+          padding: 6px; display: flex; flex-direction: column; min-width: 150px; z-index: 2; }
+  .menu button { background: transparent; text-align: left; }
+  .menu button.danger { color: var(--red-text); }
+  .card.dim .cam img, .card.dim .stats { opacity: .45; }
   .empty { text-align: center; padding: 48px 16px; }
   #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
-           padding: 8px 14px; border-radius: 8px; display: none; max-width: calc(100% - 32px); }
+           padding: 10px 16px; border-radius: 8px; font-weight: 700; display: none; max-width: calc(100% - 32px); }
 </style>
 </head>
 <body>
-<header>
-  <h1>Printer Monitor</h1>
-  <div class="row">
-    <button id="scanBtn" class="primary">Scan network</button>
-    <button id="manualBtn">Add by IP</button>
-  </div>
-</header>
 <main>
+  <div class="top">
+    <h1>Your <span>Printers</span></h1>
+    <div class="row">
+      <button id="manualBtn">Add by IP</button>
+      <button id="scanBtn" class="primary">Scan network</button>
+    </div>
+  </div>
+
   <section id="manual" class="panel" hidden>
     <h2>Add a printer by address</h2>
     <form id="manualForm" class="row">
-      <input name="host" placeholder="192.168.1.50" required style="flex:2 1 160px">
-      <input name="port" placeholder="7125" inputmode="numeric" style="flex:1 1 80px">
-      <input name="api_key" placeholder="API key (if needed)" style="flex:2 1 160px">
+      <input name="host" placeholder="192.168.1.50" required aria-label="IP address" style="flex:2 1 160px">
+      <input name="port" placeholder="7125" inputmode="numeric" aria-label="Port" style="flex:1 1 80px">
+      <input name="api_key" placeholder="API key (if needed)" aria-label="API key" style="flex:2 1 160px">
       <button class="primary">Add</button>
     </form>
   </section>
@@ -104,7 +123,7 @@ async function api(path, opts = {}) {
   if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
   return data;
 }
-const fmtTemp = (t, target) => t == null ? "—" : `${t.toFixed(0)}°` + (target ? ` / ${target.toFixed(0)}°` : "");
+const fmtTemp = t => t == null ? "—" : `${t.toFixed(0)}°`;
 function fmtDur(s) {
   if (s == null) return "—";
   s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
@@ -115,6 +134,22 @@ function statusOf(p) {
   if (p.klippy_state !== "ready") return p.klippy_state || "starting";
   return p.state || "standby";
 }
+// state -> [tag text, tag colour, bar/percent colour, status line, status colour]
+const LOOK = {
+  printing:   ["Printing",  "orange", "var(--orange)", "Printing",               "var(--orange)"],
+  paused:     ["Paused",    "",       "var(--orange)", "Paused",                 "var(--orange)"],
+  complete:   ["Done",      "purple", "var(--purple)", "Print complete",         "var(--lilac)"],
+  cancelled:  ["Cancelled", "grey",   "var(--muted)",  "Print cancelled",        "var(--muted)"],
+  error:      ["Error",     "red",    "var(--red)",    "Print failed",           "var(--red-text)"],
+  standby:    ["Idle",      "",       "var(--orange)", "Online, ready to print", "var(--text)"],
+  shutdown:   ["Error",     "red",    "var(--red)",    "Klipper shut down",      "var(--red-text)"],
+  offline:    ["Offline",   "grey",   "var(--muted)",  "Can't reach printer",    "var(--muted)"],
+  connecting: ["Connecting","grey",   "var(--muted)",  "Connecting…",            "var(--muted)"],
+  auth_error: ["Offline",   "grey",   "var(--muted)",  "Needs a valid API key",  "var(--red-text)"],
+};
+const look = st => LOOK[st] || [st, "grey", "var(--muted)", `Klipper ${st}`, "var(--muted)"];
+const NOCAM_SVG = `<svg width="44" height="44" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8.8a15 15 0 0 1 4.2-2.6M10.7 5.1A15 15 0 0 1 22 8.8M5 12.5a10 10 0 0 1 3.3-2M15.5 10.7A10 10 0 0 1 19 12.5M8.5 16a5 5 0 0 1 7 0M12 20h.01M3 3l18 18"/></svg>`;
+const MENU_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>`;
 
 // ---- dashboard ---------------------------------------------------------------
 function render() {
@@ -126,35 +161,59 @@ function render() {
     if (!el) {
       el = document.createElement("article");
       el.className = "card"; el.dataset.id = p.id;
-      el.innerHTML = `<img class="cam" alt="" hidden><div class="body">
-        <div class="top"><span class="name" title="Click to rename"></span><span class="pill"></span></div>
-        <div class="file muted"></div><div class="bar"><div></div></div>
-        <div class="stats"></div>
-        <div class="actions"><button data-act="remove">Remove</button></div></div>`;
-      el.querySelector(".name").onclick = () => rename(p.id);
-      el.querySelector("[data-act=remove]").onclick = () => removePrinter(p.id);
+      el.innerHTML = `<div class="cam"><img alt="" hidden><div class="nocam">${NOCAM_SVG}<span></span></div>
+          <span class="tag"></span>
+          <button class="iconbtn" aria-label="Printer settings" aria-expanded="false">${MENU_SVG}</button>
+          <div class="caption"><span class="name"></span><span class="pct"></span></div></div>
+        <div class="bar"><div></div></div>
+        <div class="status"></div>
+        <dl class="stats"><div><dt>Time left</dt><dd data-f="left"></dd></div>
+          <div><dt>Nozzle</dt><dd data-f="nozzle"></dd></div><div><dt>Bed</dt><dd data-f="bed"></dd></div></dl>
+        <div class="menu" hidden><button data-act="rename">Rename</button><button data-act="remove" class="danger">Remove</button></div>`;
+      const menu = el.querySelector(".menu"), mbtn = el.querySelector(".iconbtn");
+      mbtn.onclick = () => { menu.hidden = !menu.hidden; mbtn.setAttribute("aria-expanded", String(!menu.hidden)); };
+      el.querySelector("[data-act=rename]").onclick = () => { menu.hidden = true; rename(p.id); };
+      el.querySelector("[data-act=remove]").onclick = () => { menu.hidden = true; removePrinter(p.id); };
       grid.append(el);
     }
     const st = statusOf(p);
+    const [tagText, tagColor, barColor, statusText, statusColor] = look(st);
+    const active = p.state === "printing" || p.state === "paused";
+    const showPct = active || p.state === "complete";
+    const pct = showPct ? p.progress : 0;
+    el.classList.toggle("dim", p.connection !== "online" || p.klippy_state !== "ready");
+
+    const tag = el.querySelector(".tag");
+    tag.textContent = tagText; tag.className = `tag ${tagColor}`; tag.title = p.error || "";
     el.querySelector(".name").textContent = p.name;
-    const pill = el.querySelector(".pill");
-    pill.textContent = st.replace("_", " "); pill.className = `pill s-${st}`;
-    pill.title = p.error || "";
-    el.querySelector(".file").textContent = p.filename || p.message || `${p.host}:${p.port}`;
-    el.querySelector(".bar > div").style.width = `${((p.state === "printing" || p.state === "paused") ? p.progress : 0) * 100}%`;
-    el.querySelector(".stats").innerHTML = `
-      <span class="muted">Nozzle</span><span>${fmtTemp(p.nozzle, p.nozzle_target)}</span>
-      <span class="muted">Bed</span><span>${fmtTemp(p.bed, p.bed_target)}</span>
-      <span class="muted">Progress</span><span>${(p.progress * 100).toFixed(1)}%</span>
-      <span class="muted">Elapsed / left</span><span>${fmtDur(p.print_duration)} / ${fmtDur(p.eta)}</span>`;
-    const cam = el.querySelector(".cam");
-    cam.hidden = !p.has_webcam;
-    if (p.has_webcam && !cam.src) cam.src = `/api/printers/${p.id}/snapshot?t=${Date.now()}`;
+    const pctEl = el.querySelector(".pct");
+    pctEl.textContent = showPct ? `${Math.floor(pct * 100)}%` : "";
+    pctEl.style.color = p.state === "complete" ? "var(--lilac)" : "#fff";
+    const bar = el.querySelector(".bar > div");
+    bar.style.width = `${pct * 100}%`; bar.style.background = barColor;
+
+    const status = el.querySelector(".status");
+    const detail = (p.state === "error" && p.message) || null;
+    status.innerHTML = `<span style="color:${statusColor}">${esc(detail || statusText)}</span>` +
+      (p.filename && (active || p.state === "complete") ? ` <span class="file">· ${esc(p.filename)}</span>` : "");
+    status.title = [detail || statusText, p.filename].filter(Boolean).join(" · ");
+
+    const live = p.connection === "online";
+    el.querySelector('[data-f="left"]').textContent = active ? fmtDur(p.eta) : "—";
+    el.querySelector('[data-f="nozzle"]').textContent = live ? fmtTemp(p.nozzle) : "—";
+    el.querySelector('[data-f="bed"]').textContent = live ? fmtTemp(p.bed) : "—";
+
+    const img = el.querySelector(".cam img"), nocam = el.querySelector(".nocam");
+    const camOk = p.has_webcam && live;
+    img.hidden = !camOk;
+    nocam.hidden = camOk;
+    nocam.querySelector("span").textContent = !live ? "Can't reach printer" : "No camera";
+    if (p.has_webcam && !img.src) img.src = `/api/printers/${p.id}/snapshot?t=${Date.now()}`;
   }
 }
 setInterval(() => {   // refresh webcam snapshots
   if (document.hidden) return;
-  for (const img of document.querySelectorAll(".card .cam:not([hidden])"))
+  for (const img of document.querySelectorAll(".card .cam img:not([hidden])"))
     img.src = `/api/printers/${img.closest(".card").dataset.id}/snapshot?t=${Date.now()}`;
 }, 5000);
 

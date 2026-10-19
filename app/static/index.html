@@ -631,6 +631,8 @@ async function api(path, opts = {}) {
   return data;
 }
 const fmtTemp = t => t == null ? "—" : `${t.toFixed(0)}°`;
+// current / target, target only while heating (numbers only, safe as HTML)
+const fmtTT = (t, tg) => t == null ? "—" : tg > 0 ? `${t.toFixed(0)}°<span class="muted" style="font-weight:400"> / ${tg.toFixed(0)}°</span>` : `${t.toFixed(0)}°`;
 function fmtDur(s) {
   if (s == null) return "—";
   s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
@@ -727,8 +729,8 @@ function render() {
 
     const live = p.connection === "online";
     el.querySelector('[data-f="left"]').textContent = active ? fmtDur(p.eta) : "—";
-    el.querySelector('[data-f="nozzle"]').textContent = live ? fmtTemp(p.nozzle) : "—";
-    el.querySelector('[data-f="bed"]').textContent = live ? fmtTemp(p.bed) : "—";
+    el.querySelector('[data-f="nozzle"]').innerHTML = live ? fmtTT(p.nozzle, p.nozzle_target) : "—";
+    el.querySelector('[data-f="bed"]').innerHTML = live ? fmtTT(p.bed, p.bed_target) : "—";
 
     const img = el.querySelector(".cam img"), nocam = el.querySelector(".nocam");
     const camOk = p.has_webcam && live;
@@ -1095,8 +1097,8 @@ function renderQV() {
   const line = $("#qvLine"); line.textContent = (p.state === "error" && p.message) || statusText; line.style.color = statusColor;
   $("#qvSub").textContent = [p.filename, active || p.state === "complete" ? `${Math.floor(pct * 100)}%` : null,
                              active ? `${fmtDur(p.eta)} left` : null].filter(Boolean).join(" · ");
-  $("#qvNozzle").textContent = live ? fmtTemp(p.nozzle) : "—";
-  $("#qvBed").textContent = live ? fmtTemp(p.bed) : "—";
+  $("#qvNozzle").innerHTML = live ? fmtTT(p.nozzle, p.nozzle_target) : "—";
+  $("#qvBed").innerHTML = live ? fmtTT(p.bed, p.bed_target) : "—";
   const pause = $("#qvPause");
   pause.textContent = p.state === "paused" ? "Resume" : "Pause";
   pause.disabled = !live || !active;
@@ -1158,8 +1160,8 @@ function renderPage() {
   pctEl.style.color = p.state === "complete" ? "var(--lilac)" : "var(--orange)";
   $("#pgLeft").textContent = active && p.eta != null ? `${fmtDur(p.eta)} left` : "";
   $("#pgDone").textContent = active && p.eta != null ? `done around ${fmtClock(new Date(Date.now() + p.eta * 1000))}` : "";
-  $("#pgNozzle").textContent = live ? fmtTemp(p.nozzle) : "—";
-  $("#pgBed").textContent = live ? fmtTemp(p.bed) : "—";
+  $("#pgNozzle").innerHTML = live ? fmtTT(p.nozzle, p.nozzle_target) : "—";
+  $("#pgBed").innerHTML = live ? fmtTT(p.bed, p.bed_target) : "—";
   $("#pgElapsed").textContent = active && p.print_duration ? fmtDur(p.print_duration) : "—";
   $("#pgStarted").textContent = active && p.print_duration ? fmtClock(new Date(Date.now() - p.print_duration * 1000)) : "—";
   const pause = $("#pgPause");

@@ -127,7 +127,8 @@ class AI:
         st = self.state.get(pid, {})
         return {"mode": self.mode_of(pid), "watching": pid in self.tasks,
                 "score": st.get("score"), "top": st.get("top"), "scores": st.get("scores"),
-                "at": st.get("at"), "streak": st.get("streak", 0), "alerted_at": st.get("alerted_at")}
+                "at": st.get("at"), "streak": st.get("streak", 0), "alerted_at": st.get("alerted_at"),
+                "alert_item": st.get("alert_item")}   # photo the "was it really a failure?" question is about
 
     def on_change(self, pid: int, prev: dict, v: dict):
         if not enabled() or not self.model:

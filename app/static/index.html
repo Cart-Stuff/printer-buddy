@@ -59,6 +59,16 @@
   .pg-ai .head .ctl2 { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
   .pg-ai .head button { min-height: 36px; padding: 0 12px; background: var(--track); font-weight: 700; }
   .ai-rows.idle { opacity: .45; }
+  .pg-ai .ask { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 700; color: var(--red-text); }
+  .pg-ai .ask button { min-height: 36px; padding: 0 14px; font-weight: 900; }
+  .pg-ai .ask .yes { background: var(--red); color: #fff; }
+  .ph-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+  .ph { background: var(--card2); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 12px; display: flex; flex-direction: column; }
+  .ph.pending { border-color: var(--orange); }
+  .ph img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: var(--card); }
+  .ph .b { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .ph select { font: inherit; min-height: 34px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
+  .ph .del { min-height: 30px; background: transparent; color: var(--red-text); padding: 0; text-align: left; }
   .pg-ai select { font: inherit; font-weight: 700; min-height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line);
                   background: var(--card); color: var(--text); }
   .ai-rows { display: grid; grid-template-columns: auto minmax(0, 1fr) 44px; gap: 6px 10px; align-items: center; font-size: 13px; }
@@ -388,6 +398,16 @@
       </div>
       <span class="hint">Higher score or more checks in a row = fewer false alarms, but a failure is caught a little later.
         Each printer's mode (off, alert, auto-pause) is in its menu and on its page.</span>
+      <fieldset><legend>Help improve the AI</legend>
+        <div class="checks"><label><input type="checkbox" name="ai_contribute"> Send my labelled photos to the Printer Buddy project</label></div>
+        <span class="hint">Off unless you tick it. When on, only labelled photos are sent (labelled by you, or OK because a print finished):
+          your printer's camera view, shrunk to 640px, with no location or camera details, and your box number but not your name or address.
+          They go to a private dataset used to train the next AI model. Delete any photo below before it's sent, or untick this any time.</span>
+      </fieldset>
+      <fieldset><legend>Photos for AI</legend>
+        <p class="muted" id="aiPhotoCounts" style="margin:0 0 10px"></p>
+        <div class="ph-grid" id="aiPhotos"></div>
+      </fieldset>
       <div class="row" style="justify-content:flex-end">
         <button type="button" id="aiClose">Close</button>
         <button class="primary">Save</button>
@@ -455,9 +475,16 @@
         <div class="head"><strong>AI watch</strong>
           <div class="ctl2">
             <button type="button" id="pgAiCheck" title="Score the camera once right now. Never alerts or pauses.">Check now</button>
+            <select id="pgAiSave" aria-label="Save this camera view for the AI" title="Save the camera view right now as a training photo">
+              <option value="">Save for AI…</option><option value="ok">as OK (no problem)</option><option value="spaghetti">as spaghetti</option>
+              <option value="warping">as warping</option><option value="first_layer">as first layer</option><option value="failure">as other failure</option>
+              <option value="stringing">as stringing</option><option value="blob">as blob</option><option value="crack">as crack</option>
+            </select>
             <select id="pgAiMode" aria-label="AI mode for this printer">
               <option value="alert">Alert only</option><option value="pause">Alert + auto-pause</option><option value="off">Off</option>
             </select></div></div>
+        <div class="ask" id="pgAiAsk" hidden><span id="pgAiAskText">Was it really a failure?</span>
+          <button type="button" class="yes" id="pgAiYes">Yes</button><button type="button" id="pgAiNo">No, it's fine</button></div>
         <div class="ai-rows" id="pgAiRows"></div>
         <div class="note" id="pgAiNote"></div>
       </div>
@@ -1555,6 +1582,8 @@ function renderPageAI(p) {
       `<div class="tr"><div class="${hot ? "hot" : alert ? "alert" : ""}" style="width:${(v || 0) * 100}%"></div></div>` +
       `<span class="v">${v == null ? "—" : Math.round(v * 100) + "%"}</span>`;
   }).join("");
+  $("#pgAiAsk").hidden = !a.alert_item;
+  if (a.alert_item) $("#pgAiAskText").textContent = `Was it really ${a.top ? aiName(a.top) : "a failure"}?`;
   const note = $("#pgAiNote");
   note.className = "note";
   if (aiCfg && !m.loaded) note.textContent = m.error || "No AI model loaded.";
@@ -1582,6 +1611,64 @@ function cycleAI(id) {
 }
 $("#pgAiMode").onchange = e => setAIMode(pageId, e.target.value);
 const aiTest = new Map();   // printer id -> last "Check now" result
+async function answerAlert(yes) {
+  const p = printers.get(pageId), iid = p?.ai?.alert_item;
+  if (!iid) return;
+  try {
+    await api(`/api/ai/photos/${iid}`, { method: "POST", body: JSON.stringify({ label: yes ? "yes" : "ok" }) });
+    toast(yes ? "Thanks — saved as a real failure" : "Thanks — saved as a false alarm (very useful for training)");
+    if (!$("#aiPanel").hidden) loadPhotos();
+  } catch (e) { toast(e.message); }
+}
+$("#pgAiYes").onclick = () => answerAlert(true);
+$("#pgAiNo").onclick = () => answerAlert(false);
+$("#pgAiSave").onchange = async e => {
+  const label = e.target.value, id = pageId;
+  e.target.value = "";
+  if (!label) return;
+  try {
+    await api(`/api/printers/${id}/ai/save`, { method: "POST", body: JSON.stringify({ label }) });
+    toast(`Saved for the AI as ${label === "ok" ? "OK" : aiName(label)}`);
+    if (!$("#aiPanel").hidden) loadPhotos();
+  } catch (err) { toast(err.message); }
+};
+
+// ---- Photos for AI (AI panel)
+let aiPhotos = null;
+const SRC_TEXT = {
+  alert: i => `AI alert: possible ${aiName(i.suggested)}`, alert_yes: () => "AI alert, you said: real failure",
+  alert_no: () => "AI alert, you said: false alarm", print: () => "During a print", print_ok: () => "Finished print",
+  print_failed: () => "Failed or cancelled print", user: () => "Saved by you",
+};
+async function loadPhotos() {
+  try { aiPhotos = await api("/api/ai/photos"); drawPhotos(); }
+  catch (e) { $("#aiPhotoCounts").textContent = e.message; }
+}
+function drawPhotos() {
+  const d = aiPhotos;
+  if (!d) return;
+  $("#aiPhotoCounts").textContent = `${d.pending} need a label · ${d.ready} labelled` +
+    (d.sharing ? ` (being sent) · ${d.sent} sent` : " (kept on this box — sharing is off)") + (d.sharing && d.error ? ` · ${d.error}` : "");
+  const items = d.items.filter(i => i.status !== "sent");
+  const opts = d.labels.map(l => `<option value="${l}">${l === "ok" ? "OK (no problem)" : esc(aiName(l))}</option>`).join("");
+  $("#aiPhotos").innerHTML = items.length ? items.map(i => `<div class="ph ${i.status === "pending" ? "pending" : ""}">
+      ${i.img ? `<img src="${i.img}" alt="" loading="lazy">` : ""}
+      <div class="b"><span><b>${esc(i.printer || "")}</b> · ${fmtClock(new Date(i.at * 1000))}</span>
+        <span class="muted">${esc((SRC_TEXT[i.source] || (() => i.source))(i))}</span>
+        ${i.status === "waiting" ? `<span class="muted">Labelled when the print ends</span>` :
+          `<select data-plabel="${i.id}" aria-label="Label"><option value="">${i.status === "pending" ? "Needs a label…" : "Label: " + (i.label === "ok" ? "OK" : esc(aiName(i.label)))}</option>${opts}</select>`}
+        <button type="button" class="del" data-pdel="${i.id}">Delete</button></div></div>`).join("")
+    : `<p class="muted" style="margin:0">No photos yet. They're collected during prints and AI alerts, or with "Save for AI…" on a printer's page.</p>`;
+  for (const sel of $("#aiPhotos").querySelectorAll("[data-plabel]")) sel.onchange = async () => {
+    if (!sel.value) return;
+    try { await api(`/api/ai/photos/${sel.dataset.plabel}`, { method: "POST", body: JSON.stringify({ label: sel.value }) }); loadPhotos(); }
+    catch (e) { toast(e.message); }
+  };
+  for (const b of $("#aiPhotos").querySelectorAll("[data-pdel]")) b.onclick = async () => {
+    try { await api(`/api/ai/photos/${b.dataset.pdel}`, { method: "DELETE" }); loadPhotos(); }
+    catch (e) { toast(e.message); }
+  };
+}
 $("#pgAiCheck").onclick = async () => {
   const btn = $("#pgAiCheck"), id = pageId;
   btn.disabled = true; btn.textContent = "Checking…";
@@ -1600,6 +1687,8 @@ function fillAIForm() {
     f[k].innerHTML = aiCfg.choices[k].map(v => `<option value="${v}">${fmt[k](v)}</option>`).join("");
     f[k].value = String(aiCfg[k]);
   }
+  f.ai_contribute.checked = !!aiCfg.ai_contribute;
+  loadPhotos();
   $("#aiModel").textContent = m.loaded
     ? `Model ${m.tag}. Alerts on: ${m.labels.filter(l => m.kinds[l] === "alert").map(aiName).join(", ")}. Warnings only: ${m.labels.filter(l => m.kinds[l] !== "alert").map(aiName).join(", ")}.`
     : (m.error || "No AI model loaded.");
@@ -1613,6 +1702,7 @@ $("#aiForm").onsubmit = async e => {
   e.preventDefault();
   const f = $("#aiForm"), b = {};
   for (const k of ["ai_threshold", "ai_interval", "ai_hold", "ai_cooldown"]) b[k] = +f[k].value;
+  b.ai_contribute = f.ai_contribute.checked;
   try { aiCfg = await api("/api/ai/settings", { method: "PUT", body: JSON.stringify(b) }); toast("Saved"); render(); }
   catch (err) { toast(err.message); }
 };

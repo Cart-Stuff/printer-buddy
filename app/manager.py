@@ -34,6 +34,7 @@ class Manager:
         self._milestone: dict[int, int] = {}         # last progress % announced per printer
         self.timelapse = None                         # set by main.py (app/timelapse.py)
         self.ai = None                                # set by main.py (app/ai.py)
+        self.collect = None                           # set by main.py (app/collect.py)
         self._subs: set[asyncio.Queue] = set()
 
     async def start(self):
@@ -115,6 +116,9 @@ class Manager:
             self.timelapse.cancel(pid)   # recordings already saved are kept
         if self.ai:
             self.ai.cancel(pid)
+        if self.collect:
+            self.collect.marks.pop(pid, None)
+            self.collect.job.pop(pid, None)
         if t := self._offline_timers.pop(pid, None):
             t.cancel()
         self.store.delete(pid)
@@ -158,6 +162,8 @@ class Manager:
             self.timelapse.on_change(pid, prev, v)
         if self.ai:
             self.ai.on_change(pid, prev, v)
+        if self.collect:
+            self._collect_on_change(pid, prev, v)
         # progress updates (advanced notifications): every N % while printing
         step = self.notifier.progress_step()
         if step and v["state"] == "printing" and prev["state"] in ("printing", "paused"):
@@ -193,6 +199,42 @@ class Manager:
         if self.notifier.enabled and self.notifier.wants(event):
             asyncio.get_running_loop().create_task(self._notify(pid, event, v))
 
+    # AI training photos (app/collect.py) ------------------------------------
+    def _ai_meta(self, pid: int) -> dict:
+        st = (self.ai.state.get(pid) if self.ai else None) or {}
+        return {"model": self.ai.model.tag if self.ai and self.ai.model else None,
+                "score": st.get("score"), "top": st.get("top"), "scores": st.get("scores")}
+
+    def _collect_on_change(self, pid: int, prev: dict, v: dict):
+        event = _event_for(prev["state"], v["state"])
+        if event == "started":
+            self.collect.print_started(pid)
+        elif event == "finished":
+            self.collect.print_finished(pid, ok=True)
+        elif event in ("failed", "cancelled"):
+            self.collect.print_finished(pid, ok=False)
+            asyncio.get_running_loop().create_task(self._collect_snapshot(pid, "print_failed", "pending"))
+        if v["state"] == "printing" and self.collect.wants_print_snapshot(pid, v.get("progress") or 0):
+            asyncio.get_running_loop().create_task(self._collect_snapshot(pid, "print", "waiting"))
+
+    async def _collect_snapshot(self, pid: int, source: str, status: str):
+        img = await self.snapshot(pid)
+        row = self.rows.get(pid)
+        if not img or not row:
+            return
+        if status == "waiting":
+            self.collect.add_print_snapshot(pid, row["name"], img, self._ai_meta(pid))
+        else:
+            self.collect.add(pid, row["name"], img, source, status, meta=self._ai_meta(pid))
+
+    async def save_for_ai(self, pid: int, label: str) -> dict | None:
+        """'Save for AI' button: snapshot now, labelled by the user."""
+        img = await self.snapshot(pid)
+        row = self.rows.get(pid)
+        if not img or not row or not self.collect:
+            return None
+        return self.collect.add(pid, row["name"], img, "user", "ready", label=label, meta=self._ai_meta(pid))
+
     # AI ---------------------------------------------------------------------
     def ai_update(self, pid: int):
         if pid in self.rows:
@@ -211,6 +253,11 @@ class Manager:
             except Exception as e:
                 log.warning("AI: couldn't pause printer %s: %s", pid, e)
         nice = label.replace("_", " ")
+        if self.collect and image:   # keep the photo so the user can say if it really was a failure
+            item = self.collect.add(pid, row["name"], image, "alert", "pending", suggested=label,
+                                    meta=self._ai_meta(pid))
+            if item and self.ai:
+                self.ai.state.setdefault(pid, {})["alert_item"] = item["id"]
         self._broadcast("event", {"id": pid, "event": "ai_failure", "name": row["name"],
                                   "label": label, "score": score, "paused": paused})
         if row.get("notify") == 0 or not self.notifier.enabled:

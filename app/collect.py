@@ -1,0 +1,241 @@
+"""Training photos for the AI: collect labelled camera snapshots, and (only if the owner opted in) send them
+to printerbuddy.stream/api/contribute, which adds them to the Printer Buddy data repo for the next model.
+
+Only active when AI detection is on. Photos live in <data>/ai/collect/<item>.jpg + <item>.json.
+Status: "pending" (needs the user's label) -> "ready" (labelled) -> "sent". "waiting" = print snapshot that
+becomes "ok" when the print finishes, or "pending" if it fails or is cancelled.
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+import io
+import json
+import logging
+import os
+import secrets
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Callable
+
+log = logging.getLogger(__name__)
+
+LABELS = ("ok", "spaghetti", "warping", "first_layer", "failure", "stringing", "blob", "crack")
+PRINT_MARKS = (0.10, 0.50, 0.90)       # snapshots per print, by progress
+KEEP = 500                             # most photos kept on the box
+SEND_EVERY = 60                        # seconds between upload rounds
+
+
+def api_url() -> str:
+    custom = os.getenv("PB_CONTRIBUTE_API", "").strip()
+    if custom:
+        return custom
+    domain = os.getenv("PB_SHARE_DOMAIN", "").strip().strip("/") or "printerbuddy.stream"
+    return f"https://{domain if domain.startswith('www.') else 'www.' + domain}/api/contribute"
+
+
+class Collector:
+    def __init__(self, store, data_dir: str, box_id: Callable[[], str], enabled: Callable[[], bool]):
+        self.store = store
+        self.root = Path(data_dir) / "ai" / "collect"
+        self.box_id = box_id
+        self.enabled = enabled              # AI detection on?
+        self.marks: dict[int, set] = {}     # pid -> print marks already taken
+        self.job: dict[int, list] = {}      # pid -> item ids waiting for the print's result
+        self._task: asyncio.Task | None = None
+        self._pause_until = 0.0
+        self.last_error: str | None = None
+
+    # settings ---------------------------------------------------------------
+    def sharing(self) -> bool:
+        return bool(self.store.settings().get("ai_contribute", False))
+
+    def set_sharing(self, on: bool):
+        self.store.save_settings({"ai_contribute": bool(on)})
+
+    # storage ----------------------------------------------------------------
+    def _meta_path(self, iid: str) -> Path:
+        return self.root / f"{iid}.json"
+
+    def image_path(self, iid: str) -> Path | None:
+        if not iid.replace("-", "").isalnum():
+            return None
+        p = self.root / f"{iid}.jpg"
+        return p if p.exists() else None
+
+    def _read(self, iid: str) -> dict | None:
+        try:
+            return json.loads(self._meta_path(iid).read_text())
+        except Exception:
+            return None
+
+    def _write(self, item: dict):
+        self._meta_path(item["id"]).write_text(json.dumps(item))
+
+    def items(self) -> list[dict]:
+        out = []
+        for p in self.root.glob("*.json"):
+            try:
+                out.append(json.loads(p.read_text()))
+            except Exception:
+                pass
+        return sorted(out, key=lambda i: i.get("at", 0), reverse=True)
+
+    def summary(self) -> dict:
+        items = self.items()
+        count = lambda st: sum(1 for i in items if i.get("status") == st)
+        return {"sharing": self.sharing(), "pending": count("pending"), "ready": count("ready"),
+                "sent": count("sent"), "error": self.last_error, "items": items[:200]}
+
+    @staticmethod
+    def _clean_jpeg(jpeg: bytes) -> bytes:
+        """640px max, re-encoded: no camera metadata leaves the box."""
+        from PIL import Image
+        im = Image.open(io.BytesIO(jpeg)).convert("RGB")
+        im.thumbnail((640, 640))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=85)
+        return buf.getvalue()
+
+    def add(self, pid: int, printer: str, jpeg: bytes, source: str, status: str,
+            label: str | None = None, suggested: str | None = None, meta: dict | None = None) -> dict | None:
+        if not self.enabled() or not jpeg:
+            return None
+        try:
+            data = self._clean_jpeg(jpeg)
+        except Exception as e:
+            log.info("collect: bad snapshot from printer %s: %s", pid, e)
+            return None
+        self.root.mkdir(parents=True, exist_ok=True)
+        iid = f"{int(time.time())}-{secrets.token_hex(3)}"
+        (self.root / f"{iid}.jpg").write_bytes(data)
+        item = {"id": iid, "pid": pid, "printer": printer, "at": time.time(), "source": source,
+                "status": status, "label": label, "suggested": suggested, "meta": meta or {}}
+        self._write(item)
+        self._trim()
+        return item
+
+    def _trim(self):
+        items = self.items()
+        for it in items[KEEP:]:
+            self.delete(it["id"])
+
+    def delete(self, iid: str) -> bool:
+        ok = False
+        for ext in (".jpg", ".json"):
+            p = self.root / f"{iid}{ext}"
+            if p.exists():
+                p.unlink()
+                ok = True
+        return ok
+
+    def set_label(self, iid: str, label: str) -> dict | None:
+        """User's answer. For an alert photo, 'ok' means 'no, not a failure'."""
+        item = self._read(iid)
+        if item and label == "yes":   # "yes, it was a failure": take the label the AI suggested
+            label = item.get("suggested") or "failure"
+        if not item or item.get("status") == "sent" or label not in LABELS:
+            return None
+        if item["source"] in ("alert", "alert_yes", "alert_no"):
+            item["source"] = "alert_no" if label == "ok" else "alert_yes"
+        item["label"], item["status"] = label, "ready"
+        self._write(item)
+        return item
+
+    # print snapshots ---------------------------------------------------------
+    def print_started(self, pid: int):
+        self.marks[pid] = set()
+        self.job[pid] = []
+
+    def wants_print_snapshot(self, pid: int, progress: float) -> float | None:
+        if not self.enabled():
+            return None
+        taken = self.marks.setdefault(pid, set())
+        for m in PRINT_MARKS:
+            if progress >= m and m not in taken:
+                taken.add(m)
+                return m
+        return None
+
+    def add_print_snapshot(self, pid: int, printer: str, jpeg: bytes, meta: dict):
+        item = self.add(pid, printer, jpeg, "print", "waiting", meta=meta)
+        if item:
+            self.job.setdefault(pid, []).append(item["id"])
+
+    def print_finished(self, pid: int, ok: bool):
+        """complete -> the print's snapshots are 'ok'; failed/cancelled -> the user labels them."""
+        for iid in self.job.pop(pid, []):
+            item = self._read(iid)
+            if not item or item.get("status") != "waiting":
+                continue
+            if ok:
+                item.update(label="ok", status="ready", source="print_ok")
+            else:
+                item.update(status="pending", source="print_failed")
+            self._write(item)
+        self.marks.pop(pid, None)
+
+    # uploading ---------------------------------------------------------------
+    def start(self):
+        if self._task is None:
+            self._task = asyncio.get_running_loop().create_task(self._loop())
+
+    async def stop(self):
+        if self._task:
+            self._task.cancel()
+            self._task = None
+
+    async def _loop(self):
+        while True:
+            try:
+                await asyncio.sleep(SEND_EVERY)
+                if self.enabled() and self.sharing() and time.time() >= self._pause_until:
+                    await self.send_ready()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                log.exception("collect: upload round failed")
+
+    async def send_ready(self, limit: int = 10):
+        ready = [i for i in self.items() if i.get("status") == "ready"][::-1][:limit]   # oldest first
+        for item in ready:
+            img = self.image_path(item["id"])
+            if not img:
+                continue
+            body = json.dumps({
+                "id": self.box_id(), "label": item["label"],
+                "source": item["source"] if item["source"] != "alert" else "alert_yes",
+                "image": base64.b64encode(img.read_bytes()).decode(),
+                "meta": {**item.get("meta", {}), "printer": item.get("printer")},
+            }).encode()
+            status, reply = await asyncio.to_thread(self._post, body)
+            if status == 201:
+                item["status"], item["sent_at"] = "sent", time.time()
+                self._write(item)
+                img.unlink(missing_ok=True)          # sent: the photo now lives in the data repo
+                self.last_error = None
+            elif status == 429:
+                self._pause_until = time.time() + 3600   # daily limit: try again in an hour
+                self.last_error = "daily limit reached, sending the rest later"
+                return
+            else:
+                self.last_error = reply or f"HTTP {status}"
+                self._pause_until = time.time() + 600
+                return
+
+    @staticmethod
+    def _post(body: bytes) -> tuple[int, str]:
+        req = urllib.request.Request(api_url(), data=body, method="POST",
+                                     headers={"content-type": "application/json", "user-agent": "printer-buddy"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.status, ""
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read()).get("error", "")
+            except Exception:
+                return e.code, ""
+        except Exception as e:
+            return 0, f"couldn't reach the server: {e}"

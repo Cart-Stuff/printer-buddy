@@ -24,6 +24,8 @@ from . import timelapse as tl
 from .timelapse import Timelapse
 from . import ai as ai_mod
 from .ai import AI
+from . import collect as collect_mod
+from .collect import Collector
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 STATIC = Path(__file__).parent / "static"
@@ -34,6 +36,8 @@ manager.timelapse = Timelapse(store, os.path.dirname(os.path.abspath(os.getenv("
                               manager.snapshot, manager.cam_transform)
 manager.ai = AI(store, os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db"))),
                 manager.snapshot, manager.cam_transform, manager.ai_mode, manager.ai_alert, manager.ai_update)
+manager.collect = Collector(store, os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db"))),
+                            lambda: share_user_id(), lambda: manager.ai.model is not None)
 scan_lock = asyncio.Lock()
 
 
@@ -243,8 +247,10 @@ async def ai_settings(request: Request):
                     return err(f"bad value for {k}")
                 values[k] = b[k]
         store.save_settings(values)
+        if "ai_contribute" in b:
+            manager.collect.set_sharing(bool(b["ai_contribute"]))
     return JSONResponse({**manager.ai.settings(), "choices": ai_mod.CHOICES, "modes": ai_mod.MODES,
-                         "model": manager.ai.info()})
+                         "model": manager.ai.info(), "ai_contribute": manager.collect.sharing()})
 
 
 async def ai_check(request: Request):
@@ -255,6 +261,59 @@ async def ai_check(request: Request):
         return JSONResponse(await manager.ai.check_now(pid))
     except RuntimeError as e:
         return err(str(e), 409)
+
+
+async def ai_photos(request: Request):
+    out = manager.collect.summary()
+    for it in out["items"]:
+        it["img"] = f"/api/ai/photos/{it['id']}.jpg" if manager.collect.image_path(it["id"]) else None
+    out["labels"] = collect_mod.LABELS
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+async def ai_photo_image(request: Request):
+    path = manager.collect.image_path(request.path_params["iid"])
+    if not path:
+        return err("not found", 404)
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+async def ai_photo_label(request: Request):
+    label = (await body(request)).get("label")
+    item = manager.collect.set_label(request.path_params["iid"], label)
+    if not item:
+        return err("can't label that photo (unknown label, already sent, or gone)")
+    for st in manager.ai.state.values():            # answered: stop asking about it
+        if st.get("alert_item") == item["id"]:
+            st["alert_item"] = None
+    if item.get("pid") in manager.rows:
+        manager.ai_update(item["pid"])
+    return JSONResponse(item)
+
+
+async def ai_photo_delete(request: Request):
+    iid = request.path_params["iid"]
+    if not manager.collect.delete(iid):
+        return err("not found", 404)
+    for st in manager.ai.state.values():
+        if st.get("alert_item") == iid:
+            st["alert_item"] = None
+    return JSONResponse({"ok": True})
+
+
+async def ai_save(request: Request):
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    label = (await body(request)).get("label")
+    if label not in collect_mod.LABELS:
+        return err(f"label must be one of: {', '.join(collect_mod.LABELS)}")
+    if not manager.ai.model:
+        return err("AI detection isn't running", 409)
+    item = await manager.save_for_ai(pid, label)
+    if not item:
+        return err("Couldn't get a picture from this printer's camera", 409)
+    return JSONResponse(item, status_code=201)
 
 
 async def ai_reload(request: Request):
@@ -662,7 +721,9 @@ async def health(request: Request):
 async def lifespan(app):
     await asyncio.to_thread(manager.ai.load)
     await manager.start()
+    manager.collect.start()
     yield
+    await manager.collect.stop()
     await manager.ai.stop()
     await manager.stop()
 
@@ -709,6 +770,11 @@ _app = Starlette(routes=[
     Route("/api/ai/settings", ai_settings, methods=["GET", "PUT"]),
     Route("/api/ai/reload", ai_reload, methods=["POST"]),
     Route("/api/printers/{pid:int}/ai/check", ai_check, methods=["POST"]),
+    Route("/api/printers/{pid:int}/ai/save", ai_save, methods=["POST"]),
+    Route("/api/ai/photos", ai_photos),
+    Route("/api/ai/photos/{iid}.jpg", ai_photo_image),
+    Route("/api/ai/photos/{iid}", ai_photo_label, methods=["POST"]),
+    Route("/api/ai/photos/{iid}", ai_photo_delete, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/timelapses", list_timelapses),
     Route("/api/printers/{pid:int}/timelapses/{tid}.mp4", timelapse_video),
     Route("/api/printers/{pid:int}/timelapses/{tid}", delete_timelapse, methods=["DELETE"]),

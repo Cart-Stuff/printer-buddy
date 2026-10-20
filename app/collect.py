@@ -62,6 +62,7 @@ class Collector:
         self.job: dict[int, list] = {}      # pid -> item ids waiting for the print's result
         self._task: asyncio.Task | None = None
         self._pause_until = 0.0
+        self._lock: asyncio.Lock | None = None   # one upload round at a time (timer and "send now" share it)
         self.last_error: str | None = None
 
     # settings ---------------------------------------------------------------
@@ -153,6 +154,8 @@ class Collector:
             self._judge(item)
         self._write(item)
         self._trim()
+        if status == "ready":
+            self.kick()
         return item
 
     def _trim(self):
@@ -181,6 +184,7 @@ class Collector:
         item["label"], item["status"] = label, "ready"
         self._judge(item)
         self._write(item)
+        self.kick()
         return item
 
     def set_severity(self, iid: str, severity) -> dict | None:
@@ -229,6 +233,8 @@ class Collector:
                 item.update(status="pending", source="print_failed")
             self._write(item)
         self.marks.pop(pid, None)
+        if ok:
+            self.kick()
 
     # uploading ---------------------------------------------------------------
     def start(self):
@@ -251,7 +257,28 @@ class Collector:
             except Exception:
                 log.exception("collect: upload round failed")
 
+    def kick(self):
+        """A photo just got its label: send it now instead of waiting for the next round (if sharing is on)."""
+        try:
+            asyncio.get_running_loop().create_task(self.send_now())
+        except RuntimeError:
+            pass   # no event loop (tests / scripts): the timer sends it later
+
+    async def send_now(self):
+        if not (self.enabled() and self.sharing()) or time.time() < self._pause_until:
+            return
+        try:
+            await self.send_ready()
+        except Exception:
+            log.exception("collect: sending now failed")
+
     async def send_ready(self, limit: int = 10):
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            await self._send_ready(limit)
+
+    async def _send_ready(self, limit: int):
         ready = [i for i in self.items() if i.get("status") == "ready"][::-1][:limit]   # oldest first
         for item in ready:
             img = self.image_path(item["id"])

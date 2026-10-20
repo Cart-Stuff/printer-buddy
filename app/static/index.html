@@ -491,8 +491,6 @@
             </select></div></div>
         <div class="ask" id="pgAiAsk" hidden><span id="pgAiAskText">Was it really a failure?</span>
           <button type="button" class="yes" id="pgAiYes">Yes</button><button type="button" id="pgAiNo">No, it's fine</button></div>
-        <div class="ask" id="pgAiSevAsk" hidden><span>How bad was it? <span class="muted" style="font-weight:400">1 = barely, 10 = total mess</span></span>
-          <div class="sev" id="pgAiSev"></div><button type="button" id="pgAiSevSkip" style="background:transparent">Skip</button></div>
         <div class="ai-rows" id="pgAiRows"></div>
         <div class="note" id="pgAiNote"></div>
       </div>
@@ -1591,7 +1589,6 @@ function renderPageAI(p) {
       `<span class="v">${v == null ? "—" : Math.round(v * 100) + "%"}</span>`;
   }).join("");
   $("#pgAiAsk").hidden = !a.alert_item;
-  $("#pgAiSevAsk").hidden = sevAsk?.pid !== p.id;
   if (a.alert_item) $("#pgAiAskText").textContent = `Was it really ${a.top ? aiName(a.top) : "a failure"}?`;
   const note = $("#pgAiNote");
   note.className = "note";
@@ -1620,23 +1617,11 @@ function cycleAI(id) {
 }
 $("#pgAiMode").onchange = e => setAIMode(pageId, e.target.value);
 const aiTest = new Map();   // printer id -> last "Check now" result
-let sevAsk = null;   // {pid, iid}: ask "how bad?" after a Yes
-$("#pgAiSev").innerHTML = Array.from({ length: 10 }, (_, i) => `<button type="button" data-sev="${i + 1}">${i + 1}</button>`).join("");
-for (const b of $("#pgAiSev").querySelectorAll("[data-sev]")) b.onclick = async () => {
-  if (!sevAsk) return;
-  const { iid } = sevAsk;
-  sevAsk = null; renderPage();
-  try { await api(`/api/ai/photos/${iid}`, { method: "POST", body: JSON.stringify({ severity: +b.dataset.sev }) }); toast(`Saved: ${b.dataset.sev}/10`);
-        if (!$("#aiPanel").hidden) loadPhotos(); }
-  catch (e) { toast(e.message); }
-};
-$("#pgAiSevSkip").onclick = () => { sevAsk = null; renderPage(); };
 async function answerAlert(yes) {
   const p = printers.get(pageId), iid = p?.ai?.alert_item;
   if (!iid) return;
   try {
     await api(`/api/ai/photos/${iid}`, { method: "POST", body: JSON.stringify({ label: yes ? "yes" : "ok" }) });
-    if (yes) { sevAsk = { pid: pageId, iid }; renderPage(); }
     toast(yes ? "Thanks — saved as a real failure" : "Thanks — saved as a false alarm (very useful for training)");
     if (!$("#aiPanel").hidden) loadPhotos();
   } catch (e) { toast(e.message); }
@@ -1648,8 +1633,11 @@ $("#pgAiSave").onchange = async e => {
   e.target.value = "";
   if (!label) return;
   try {
-    await api(`/api/printers/${id}/ai/save`, { method: "POST", body: JSON.stringify({ label }) });
-    toast(`Saved for the AI as ${label === "ok" ? "OK" : aiName(label)}`);
+    const r = await api(`/api/printers/${id}/ai/save`, { method: "POST", body: JSON.stringify({ label }) });
+    const name = label === "ok" ? "OK" : aiName(label);
+    toast(r.status === "sent" ? `Sent to the AI as ${name}. Thanks!`
+      : !r.sharing ? `Saved on this box as ${name}. Turn on "Help improve the AI" (AI settings) to send it.`
+      : `Saved as ${name}, not sent yet${r.error ? `: ${r.error}` : ""}. It will retry.`);
     if (!$("#aiPanel").hidden) loadPhotos();
   } catch (err) { toast(err.message); }
 };
@@ -1681,7 +1669,6 @@ function drawPhotos() {
       ${i.img ? `<img src="${i.img}" alt="" loading="lazy">` : ""}
       <div class="b"><span><b>${esc(i.printer || "")}</b> · ${fmtClock(new Date(i.at * 1000))}</span>
         <span class="muted">${esc((SRC_TEXT[i.source] || (() => i.source))(i))}</span>
-        ${i.label && i.label !== "ok" && i.status !== "sent" ? `<select data-psev="${i.id}" aria-label="How bad"><option value="">${i.severity ? `How bad: ${i.severity}/10` : "How bad? 1–10"}</option>${Array.from({ length: 10 }, (_, k) => `<option value="${k + 1}">${k + 1}${k === 0 ? " (barely)" : k === 9 ? " (total mess)" : ""}</option>`).join("")}</select>` : ""}
         ${i.verdict ? `<span class="v-${i.verdict}">${{ right: "AI was right", false_alarm: "AI false alarm", missed: "AI missed it" }[i.verdict]}</span>` : ""}
         ${i.status === "waiting" ? `<span class="muted">Labelled when the print ends</span>` :
           `<select data-plabel="${i.id}" aria-label="Label"><option value="">${i.status === "pending" ? "Needs a label…" : "Label: " + (i.label === "ok" ? "OK" : esc(aiName(i.label)))}</option>${opts}</select>`}
@@ -1690,11 +1677,6 @@ function drawPhotos() {
   for (const sel of $("#aiPhotos").querySelectorAll("[data-plabel]")) sel.onchange = async () => {
     if (!sel.value) return;
     try { await api(`/api/ai/photos/${sel.dataset.plabel}`, { method: "POST", body: JSON.stringify({ label: sel.value }) }); loadPhotos(); }
-    catch (e) { toast(e.message); }
-  };
-  for (const sel of $("#aiPhotos").querySelectorAll("[data-psev]")) sel.onchange = async () => {
-    if (!sel.value) return;
-    try { await api(`/api/ai/photos/${sel.dataset.psev}`, { method: "POST", body: JSON.stringify({ severity: +sel.value }) }); loadPhotos(); }
     catch (e) { toast(e.message); }
   };
   for (const b of $("#aiPhotos").querySelectorAll("[data-pdel]")) b.onclick = async () => {

@@ -328,7 +328,9 @@ async def ai_save(request: Request):
     item = await manager.save_for_ai(pid, label)
     if not item:
         return err("Couldn't get a picture from this printer's camera", 409)
-    return JSONResponse(item, status_code=201)
+    await manager.collect.send_now()                  # send it now, so the toast can say whether it went
+    item = manager.collect._read(item["id"]) or item
+    return JSONResponse({**item, "sharing": manager.collect.sharing(), "error": manager.collect.last_error}, status_code=201)
 
 
 async def ai_reload(request: Request):

@@ -198,6 +198,7 @@ github_login() {   # ask for a username + token once and save it for this repo (
 }
 
 version() { git -C "$DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown"; }
+branch() { git -C "$DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown"; }
 
 hard_restart() {   # full stop, then start, then wait until it answers
   local port; port="$(get_env PORT)"; port="${port:-8080}"
@@ -287,10 +288,48 @@ do_install() {
 do_update() {
   echo; echo "Updating..."
   git -C "$DIR" pull --ff-only || { echo "git pull failed (local changes?). Nothing else was changed."; return 1; }
+  after_code_change || return 1
+  echo "Updated to $(git -C "$DIR" log -1 --format='%h %s')"
+  check_updates
+}
+
+after_code_change() {   # new code is in place (update or branch switch): requirements, AI model, restart
   if [ -x "$DIR/.venv/bin/pip" ]; then "$DIR/.venv/bin/pip" install -r "$DIR/requirements.txt" -q || return 1; fi
   [ -x "$DIR/.venv/bin/pip" ] && ensure_ai
   if installed; then write_unit; hard_restart || return 1; fi
-  echo "Updated to $(git -C "$DIR" log -1 --format='%h %s')"
+  return 0
+}
+
+switch_branch() {   # list every branch on GitHub, pick one, switch to it; Update then follows that branch
+  git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1 || { echo "This copy isn't a git checkout, so it can't switch branch."; return 1; }
+  echo; echo "Getting the branch list from GitHub..."
+  # a one-branch clone only knows its own branch; make it see (and track) all of them
+  git -C "$DIR" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true timeout 30 git -C "$DIR" fetch -q --prune origin \
+    || { echo "Couldn't get the branches (no internet, or GitHub login needed: menu option 8)."; return 1; }
+  local cur list b c i=0
+  cur="$(branch)"
+  mapfile -t list < <(git -C "$DIR" for-each-ref --format='%(refname:strip=3)' refs/remotes/origin | grep -vx HEAD)
+  [ ${#list[@]} -gt 0 ] || { echo "No branches found on GitHub."; return 1; }
+  echo
+  for b in "${list[@]}"; do
+    i=$((i + 1))
+    if [ "$b" = "$cur" ]; then echo "  $i) $b   <- current"; else echo "  $i) $b"; fi
+  done
+  echo
+  c="$(ask "Switch to (number, Enter = cancel): ")"
+  [ -n "$c" ] || { echo "Cancelled. Nothing changed."; return 0; }
+  if ! [[ "$c" =~ ^[0-9]+$ ]] || [ "$c" -lt 1 ] || [ "$c" -gt ${#list[@]} ]; then echo "That's not a number from the list. Nothing changed."; return 1; fi
+  b="${list[$((c - 1))]}"
+  [ "$b" != "$cur" ] || { echo "Already on $b. Use 3) Update to get its latest."; return 0; }
+  if [ -n "$(git -C "$DIR" status --porcelain --untracked-files=no)" ]; then
+    echo "The code folder has local edits, so it can't switch safely. Nothing changed."; return 1
+  fi
+  echo "Switching to $b..."
+  git -C "$DIR" checkout -q -B "$b" "origin/$b" && git -C "$DIR" branch -q --set-upstream-to "origin/$b" "$b" \
+    || { echo "Switching failed. Nothing else was changed."; return 1; }
+  after_code_change || return 1
+  echo "Now on $b: $(git -C "$DIR" log -1 --format='%h %s')"
   check_updates
 }
 
@@ -468,13 +507,14 @@ main_menu() {
     top; center "PRINTER BUDDY"; hr
     local st; st="$(service_state)"
     if [ "$st" = "running" ]; then row "Service:  ● running   $(url)"; else row "Service:  ○ $st"; fi
-    row "Version:  $(version)${UPDATE_INFO:+ ($UPDATE_INFO)}"
+    row "Version:  $(version) on $(branch)${UPDATE_INFO:+ ($UPDATE_INFO)}"
     hr; setup_lines; hr
     if installed; then row "$(printf '%-28s%s' '1) Reinstall' '5) Restart service')"; else row "$(printf '%-28s%s' '1) Install' '5) Restart service')"; fi
     row "$(printf '%-28s%s' '2) Change setup' '6) Show logs')"
     row "$(printf '%-28s%s' '3) Update' '7) Remove')"
     row "$(printf '%-28s%s' '4) Backup / restore data' '8) GitHub login')"
     row "$(printf '%-28s%s' '9) Remote / share links' 'P) Change port')"
+    row "$(printf '%-28s%s' 'G) Switch branch' '')"
     row ""; row "Q) Quit"; bottom
     c="$(ask "Perform action: ")"
     case "$c" in
@@ -488,6 +528,7 @@ main_menu() {
       8) github_login; pause ;;
       9) remote_menu ;;
       p|port) change_port; pause ;;
+      g|branch) switch_branch; pause ;;
       q|quit|exit) echo "Bye."; exit 0 ;;
       *) ;;
     esac

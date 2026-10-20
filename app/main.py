@@ -8,24 +8,26 @@ import logging
 import os
 import secrets
 import time
+import zlib
 from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
-from . import discovery
-from .manager import Manager
-from .net import http_get, http_stream
-from .notify import ALL_EVENTS, PROGRESS_STEPS, SERVICES, Notifier, advanced as notify_advanced
-from .store import Store
-from . import timelapse as tl
-from .timelapse import Timelapse
-from . import ai as ai_mod
-from .ai import AI
-from . import collect as collect_mod
-from .collect import Collector
+from .printers import discovery
+from .printers.manager import Manager
+from .core.net import get_json, http_get, http_stream
+from .core.notify import ALL_EVENTS, PROGRESS_STEPS, SERVICES, Notifier, advanced as notify_advanced
+from .core.store import Store
+from .media import timelapse as tl
+from .media.timelapse import Timelapse
+from .ai import detector as ai_mod
+from .ai.detector import AI
+from .ai import collect as collect_mod
+from .ai.collect import Collector
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -39,10 +41,12 @@ class _QuietShutdown(logging.Filter):
 
 
 logging.getLogger("uvicorn.error").addFilter(_QuietShutdown())
-STATIC = Path(__file__).parent / "static"
+STATIC = Path(__file__).resolve().parent.parent / "ui"   # the web app (served at /static/)
 
 store = Store(os.getenv("DB_PATH", "data/monitor.db"))
 manager = Manager(store, Notifier(store))
+from .printers import moonraker as _mr   # noqa: E402
+_mr.ETA_MODE = store.settings().get("eta_mode", "file") if store.settings().get("eta_mode") in ("file", "slicer", "filament") else "file"
 manager.timelapse = Timelapse(store, os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db"))),
                               manager.snapshot, manager.cam_transform)
 manager.ai = AI(store, os.path.dirname(os.path.abspath(os.getenv("DB_PATH", "data/monitor.db"))),
@@ -70,6 +74,27 @@ def _pid(request: Request) -> int | None:
 
 
 # ---- pages -------------------------------------------------------------------
+async def manifest(request: Request):
+    """Lets phones and computers install Printer Buddy as an app ("Add to home screen" / "Install")."""
+    return JSONResponse({
+        "name": "Printer Buddy", "short_name": "Printer Buddy", "start_url": "/", "scope": "/", "display": "standalone",
+        "background_color": "#0B0B0D", "theme_color": "#0B0B0D",
+        "icons": [{"src": "/static/assets/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                  {"src": "/static/assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}],
+    }, media_type="application/manifest+json")
+
+
+SW = """// Printer Buddy service worker: only here so it can be installed as an app. Everything always comes from the network.
+self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));
+self.addEventListener("fetch", () => {});
+"""
+
+
+async def service_worker(request: Request):
+    return Response(SW, media_type="text/javascript", headers={"Cache-Control": "no-cache"})
+
+
 async def index(request: Request):
     # no-cache: the browser always checks for a newer page after an update
     return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
@@ -262,6 +287,129 @@ async def ai_settings(request: Request):
             manager.collect.set_sharing(bool(b["ai_contribute"]))
     return JSONResponse({**manager.ai.settings(), "choices": ai_mod.CHOICES, "modes": ai_mod.MODES,
                          "model": manager.ai.info(), "ai_contribute": manager.collect.sharing()})
+
+
+async def ui_layout(request: Request):
+    """The builder's layout (tabs, rows, columns, panels), saved on this box so every device shows the same.
+    ?scope=home is the home (all printers) page; otherwise the printer page."""
+    key = "ui_layout_home" if request.query_params.get("scope") == "home" else "ui_layout"
+    if request.method == "PUT":
+        b = await body(request)
+        layout = b.get("layout")
+        if not isinstance(layout, dict) or not isinstance(layout.get("tabs"), list) or len(json.dumps(layout)) > 200_000:
+            return err("bad layout")
+        store.save_settings({key: layout})
+    return JSONResponse({"layout": store.settings().get(key)})
+
+
+KV_KEYS = ("presets", "notes", "maintenance", "console_filters")
+
+
+async def ui_eta(request: Request):
+    """How "time left" is worked out for every printer on this box: file | slicer | filament (Settings > Look)."""
+    mr = _mr
+    if request.method == "PUT":
+        mode = (await body(request)).get("mode")
+        if mode not in ("file", "slicer", "filament"):
+            return err("bad mode")
+        store.save_settings({"eta_mode": mode})
+        mr.ETA_MODE = mode
+    return JSONResponse({"mode": mr.ETA_MODE})
+
+
+async def printer_kv(request: Request):
+    """Small per-printer lists saved on this box (temperature presets, history notes, maintenance, console filters).
+    GET/PUT /api/printers/{pid}/kv?key=presets  body {value: ...}"""
+    pid, key = request.path_params["pid"], request.query_params.get("key", "")
+    if key not in KV_KEYS:
+        return err("unknown key", 404)
+    name = f"kv_{pid}_{key}"
+    if request.method == "PUT":
+        b = await body(request)
+        if "value" not in b or len(json.dumps(b["value"])) > 200_000:
+            return err("bad value")
+        store.save_settings({name: b["value"]})
+    return JSONResponse({"value": store.settings().get(name)})
+
+
+_notices = {"at": 0.0, "items": []}
+
+
+async def notices(request: Request):
+    """Moonraker's own notices from every online printer, for the bell: warnings, failed components and the official
+    Klipper / Moonraker announcements (server.announcements). Cached 10 minutes."""
+    if time.time() - _notices["at"] < 600 and request.query_params.get("refresh") != "1":
+        return JSONResponse({"items": _notices["items"]})
+    names = {p["id"]: p["name"] for p in store.list()}
+
+    async def one(pid, client):
+        out = []
+        if client.connection != "online":
+            return out
+        name = names.get(pid, f"Printer {pid}")
+        try:
+            info = await client.rpc("server.info", timeout=8) or {}
+            for w in info.get("warnings") or []:
+                out.append({"id": f"w-{pid}-{zlib.crc32(str(w).encode())}", "title": f"{name}: Moonraker warning", "body": str(w)[:600], "level": "important"})
+            for c in info.get("failed_components") or []:
+                out.append({"id": f"f-{pid}-{c}", "title": f"{name}: Moonraker part failed to start: {c}",
+                            "body": "Check moonraker.log on that printer.", "level": "important"})
+        except Exception:
+            pass
+        try:
+            res = await client.rpc("server.announcements.list", {"include_dismissed": False}, timeout=8) or {}
+            for a in res.get("entries") or []:
+                if a.get("dismissed"):
+                    continue
+                out.append({"id": f"a-{pid}-{a.get('entry_id')}", "title": f"{name}: {a.get('title') or 'Announcement'}",
+                            "body": str(a.get("description") or "")[:600], "link": a.get("url"),
+                            "level": "important" if a.get("priority") == "high" else "update",
+                            "date": time.strftime("%Y-%m-%d", time.localtime(a["date"])) if a.get("date") else None})
+        except Exception:
+            pass
+        return out
+
+    groups = await asyncio.gather(*(one(pid, c) for pid, c in list(manager.clients.items())))
+    seen, items = set(), []
+    for g in groups:   # the same announcement on several printers: show it once
+        for it in g:
+            key = it["id"].split("-", 2)[0] + it["title"].split(": ", 1)[-1] + (it.get("body") or "")[:80]
+            if it["id"].startswith("a-") and key in seen:
+                continue
+            seen.add(key)
+            items.append(it)
+    _notices.update(at=time.time(), items=items)
+    return JSONResponse({"items": items})
+
+
+_news = {"at": 0.0, "items": []}
+
+
+async def news(request: Request):
+    """Printer Buddy news (the bell): fetched from printerbuddy.stream at most every 6 hours, nothing about this box is sent."""
+    if time.time() - _news["at"] > 6 * 3600 or request.query_params.get("refresh") == "1":
+        domain = os.getenv("PB_SHARE_DOMAIN", "").strip().strip("/") or "printerbuddy.stream"
+        try:
+            status, data = await get_json(f"https://www.{domain}/api/news", timeout=8)
+            if status == 200 and isinstance(data, dict) and isinstance(data.get("items"), list):
+                _news["items"] = [n for n in data["items"] if isinstance(n, dict) and n.get("id") and n.get("title")][:50]
+            _news["at"] = time.time()
+        except Exception:
+            _news["at"] = time.time() - 5.5 * 3600   # offline: try again in ~30 minutes
+    return JSONResponse({"items": _news["items"]})
+
+
+def _git(*args) -> str:
+    import subprocess
+    try:
+        return subprocess.run(["git", "-C", str(Path(__file__).resolve().parent.parent), *args],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return ""
+
+
+VERSION_INFO = {"commit": _git("rev-parse", "--short", "HEAD"), "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+                "date": _git("log", "-1", "--format=%cs")}
 
 
 async def ai_check(request: Request):
@@ -522,6 +670,41 @@ def _online_client(request: Request):
     return client, None
 
 
+async def temps(request: Request):
+    client, e = _online_client(request)
+    if e:
+        return e
+    try:
+        return JSONResponse({"history": await client.temperature_history(), "sensors": client.sensors()},
+                            headers={"Cache-Control": "no-store"})
+    except Exception as ex:
+        return err(str(ex) or type(ex).__name__, 502)
+
+
+async def thumbnail(request: Request):
+    client, e = _online_client(request)
+    if e:
+        return e
+    name = request.query_params.get("file", "").strip().lstrip("/")
+    if not name or ".." in name.split("/"):
+        return err("file is required")
+    try:
+        got = await client.thumbnail(name)
+    except Exception as ex:
+        return err(str(ex) or type(ex).__name__, 502)
+    if not got:
+        return err("no preview picture in this file", 404)
+    ctype, data = got
+    return Response(data, media_type=ctype, headers={"Cache-Control": "max-age=3600"})
+
+
+async def macros(request: Request):
+    client, e = _online_client(request)
+    if e:
+        return e
+    return JSONResponse({"macros": client.macros})
+
+
 async def list_files(request: Request):
     client, e = _online_client(request)
     if e:
@@ -536,14 +719,146 @@ async def print_file(request: Request):
     client, e = _online_client(request)
     if e:
         return e
-    name = str((await body(request)).get("path", "")).strip()
+    b = await body(request)
+    name = str(b.get("path", "")).strip()
     if not name:
         return err("path is required")
+    pid = request.path_params["pid"]
+    if b.get("timelapse") is False:     # start-print dialog: don't record this one
+        manager.timelapse.skip.add(pid)
+    else:
+        manager.timelapse.skip.discard(pid)
     try:
         await client.start_print(name)
     except Exception as ex:
         return err(str(ex) or type(ex).__name__, 502)
     return JSONResponse({"ok": True})
+
+
+async def job_queue(request: Request):
+    """GET: the printer's job queue. POST {action: add|remove|start|pause|jump, filenames|job_ids|job_id}."""
+    client, e = _online_client(request)
+    if e:
+        return e
+    action, params = "status", None
+    if request.method == "POST":
+        b = await body(request)
+        action = b.get("action")
+        if action == "add":
+            names = [str(n).strip() for n in b.get("filenames") or [] if str(n).strip() and ".." not in str(n).split("/")]
+            if not names:
+                return err("filenames is required")
+            params = {"filenames": names}
+            if b.get("reset"):   # replace the whole queue (the Queue panel's copies / reorder)
+                params["reset"] = True
+        elif action == "remove":
+            params = {"job_ids": [str(j) for j in b.get("job_ids") or []]}
+            if not params["job_ids"]:
+                return err("job_ids is required")
+        elif action == "jump":
+            params = {"job_id": str(b.get("job_id") or "")}
+        elif action not in ("start", "pause"):
+            return err("bad action")
+    try:
+        return JSONResponse(await client.job_queue(action, params))
+    except Exception as ex:
+        text = str(ex) or type(ex).__name__
+        if "not found" in text.lower() or "-32601" in text:
+            return err("The job queue isn't turned on for this printer: add [job_queue] to moonraker.conf and restart Moonraker.", 404)
+        return err(text, 502)
+
+
+# Moonraker methods the dashboard panels may call directly (LAN only: the tunnel only reaches /share/).
+# method -> timeout in seconds. Updates can take many minutes.
+RPC_ALLOW = {
+    "server.files.get_directory": 20, "server.files.list": 20, "server.files.move": 30, "server.files.copy": 60, "server.files.post_directory": 15,
+    "server.files.delete_directory": 30, "server.files.delete_file": 15, "server.files.metadata": 15,
+    "machine.proc_stats": 10, "machine.system_info": 10, "machine.services.restart": 30, "machine.services.stop": 30,
+    "machine.services.start": 30, "machine.reboot": 15, "machine.shutdown": 15,
+    "printer.restart": 15, "printer.firmware_restart": 15, "printer.gcode.help": 15, "printer.objects.query": 15,
+    "machine.update.status": 60, "machine.update.refresh": 300, "machine.update.upgrade": 1800, "machine.update.full": 3600,
+    "machine.update.client": 1800, "machine.update.klipper": 1800, "machine.update.moonraker": 1800,
+    "machine.update.system": 3600, "machine.update.recover": 1800,
+    "machine.device_power.devices": 15, "machine.device_power.post_device": 30,
+    "server.spoolman.status": 15, "server.spoolman.get_spool_id": 15, "server.spoolman.post_spool_id": 15,
+    "server.spoolman.proxy": 20,
+    "machine.peripherals.usb": 20, "machine.peripherals.serial": 20, "machine.peripherals.video": 20, "machine.peripherals.canbus": 30,
+    "server.history.get_job": 15, "printer.query_endstops.status": 10, "server.sensors.list": 10, "server.webcams.list": 10, "server.webcams.post_item": 15, "server.webcams.delete_item": 15, "printer.objects.list": 10,
+    "server.info": 10, "server.announcements.list": 15, "server.announcements.dismiss": 15, "printer.info": 10,
+}
+
+
+async def rpc(request: Request):
+    """POST {method, params}: one of the allowed Moonraker methods above, for the dashboard panels."""
+    client, e = _online_client(request)
+    if e:
+        return e
+    b = await body(request)
+    method, params = b.get("method"), b.get("params")
+    if method not in RPC_ALLOW:
+        return err("method not allowed", 403)
+    if params is not None and not isinstance(params, dict):
+        return err("params must be an object")
+    try:
+        result = await client.rpc(method, params, timeout=RPC_ALLOW[method])
+        if method in ("server.webcams.post_item", "server.webcams.delete_item"):
+            await client._load_webcams()   # the camera list changed: show it right away
+        return JSONResponse({"result": result})
+    except Exception as ex:
+        text = str(ex) or type(ex).__name__
+        return err(text, 404 if "not found" in text.lower() else 502)
+
+
+FILE_ROOTS = ("gcodes", "config", "logs")
+
+
+def _root_path(request: Request):
+    root, path = request.query_params.get("root", "gcodes"), request.query_params.get("path", "").strip().lstrip("/")
+    if root not in FILE_ROOTS or not path or ".." in path.split("/"):
+        return None, None
+    return root, path
+
+
+async def printer_file(request: Request):
+    """GET: stream a file (G-code preview, config editor, log download). PUT: save a config file (the editor)."""
+    client, e = _online_client(request)
+    if e:
+        return e
+    root, path = _root_path(request)
+    if not root:
+        return err("bad root or path")
+    if request.method == "PUT":
+        if root != "config":
+            return err("only config files can be saved here")
+        data = await request.body()
+        if len(data) > 5_000_000:
+            return err("file is too big", 413)
+        folder, _, name = path.rpartition("/")
+        try:
+            await client.upload(name, data, root="config", folder=folder)
+        except Exception as ex:
+            return err(str(ex) or type(ex).__name__, 502)
+        return JSONResponse({"ok": True})
+    try:
+        upstream = await client.read_file(root, path)
+    except Exception as ex:
+        return err(str(ex) or type(ex).__name__, 502)
+    if upstream.status != 200:
+        upstream.close()
+        return err(f"Moonraker said HTTP {upstream.status}", 404 if upstream.status == 404 else 502)
+
+    async def relay():
+        try:
+            async for chunk in upstream.chunks():
+                yield chunk
+        finally:
+            upstream.close()
+    name = path.rsplit("/", 1)[-1].replace('"', "")
+    headers = {"Cache-Control": "no-store"}
+    if request.query_params.get("download") == "1":
+        headers["Content-Disposition"] = f'attachment; filename="{name}"'
+    ctype = "text/plain; charset=utf-8" if root != "gcodes" or request.query_params.get("download") != "1" else "application/octet-stream"
+    return StreamingResponse(relay(), media_type=ctype, headers=headers)
 
 
 async def delete_file(request: Request):
@@ -575,7 +890,10 @@ async def upload_file(request: Request):
     if not data:
         return err("the file is empty")
     try:
-        await client.upload(name, bytes(data), start=request.query_params.get("print") == "1")
+        folder = request.query_params.get("dir", "").strip().strip("/")
+        if ".." in folder.split("/"):
+            return err("bad folder")
+        await client.upload(name, bytes(data), start=request.query_params.get("print") == "1", folder=folder)
     except Exception as ex:
         return err(str(ex) or type(ex).__name__, 502)
     return JSONResponse({"ok": True, "name": name})
@@ -727,7 +1045,8 @@ STARTED = str(time.time())  # changes on every restart; open pages reload when i
 
 async def get_config(request: Request):
     chosen = setup()
-    return JSONResponse({"started": STARTED, "setup": chosen, "not_built": [k for k, v in chosen.items() if f"{k}.{v}" not in BUILT]})
+    return JSONResponse({"started": STARTED, "setup": chosen, "not_built": [k for k, v in chosen.items() if f"{k}.{v}" not in BUILT],
+                         "version": VERSION_INFO})
 
 
 async def health(request: Request):
@@ -763,6 +1082,8 @@ class TunnelGuard:
 
 _app = Starlette(routes=[
     Route("/", index),
+    Route("/manifest.webmanifest", manifest),
+    Route("/sw.js", service_worker),
     Route("/healthz", health),
     Route("/api/config", get_config),
     Route("/api/scan", scan, methods=["POST"]),
@@ -785,6 +1106,8 @@ _app = Starlette(routes=[
     Route("/share/printer/{pid:int}/{code}/stream", share_stream),
     Route("/api/timelapse/settings", timelapse_settings, methods=["GET", "PUT"]),
     Route("/api/ai/settings", ai_settings, methods=["GET", "PUT"]),
+    Route("/api/ui/layout", ui_layout, methods=["GET", "PUT"]),
+    Route("/api/news", news),
     Route("/api/ai/reload", ai_reload, methods=["POST"]),
     Route("/api/printers/{pid:int}/ai/check", ai_check, methods=["POST"]),
     Route("/api/printers/{pid:int}/ai/save", ai_save, methods=["POST"]),
@@ -796,16 +1119,26 @@ _app = Starlette(routes=[
     Route("/api/printers/{pid:int}/timelapses/{tid}.mp4", timelapse_video),
     Route("/api/printers/{pid:int}/timelapses/{tid}", delete_timelapse, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/gcode", printer_gcode, methods=["POST"]),
+    Route("/api/printers/{pid:int}/temps", temps),
+    Route("/api/printers/{pid:int}/thumbnail", thumbnail),
+    Route("/api/printers/{pid:int}/macros", macros),
     Route("/api/printers/{pid:int}/files", list_files),
     Route("/api/printers/{pid:int}/history", history),
     Route("/api/printers/{pid:int}/history/totals", history_totals),
     Route("/api/printers/{pid:int}/files", delete_file, methods=["DELETE"]),
     Route("/api/printers/{pid:int}/files/print", print_file, methods=["POST"]),
+    Route("/api/printers/{pid:int}/queue", job_queue, methods=["GET", "POST"]),
+    Route("/api/printers/{pid:int}/rpc", rpc, methods=["POST"]),
+    Route("/api/printers/{pid:int}/kv", printer_kv, methods=["GET", "PUT"]),
+    Route("/api/notices", notices),
+    Route("/api/ui/eta", ui_eta, methods=["GET", "PUT"]),
+    Route("/api/printers/{pid:int}/file", printer_file, methods=["GET", "PUT"]),
     Route("/api/printers/{pid:int}/files/upload", upload_file, methods=["POST"]),
     Route("/api/printers/{pid:int}/{action}", printer_action, methods=["POST"]),
     Route("/api/events", events),
     Route("/api/notify/settings", get_notify_settings),
     Route("/api/notify/settings", save_notify_settings, methods=["PUT"]),
     Route("/api/notify/test", test_notification, methods=["POST"]),
+    Mount("/static", app=StaticFiles(directory=STATIC), name="static"),
 ], lifespan=lifespan)
 app = TunnelGuard(_app)

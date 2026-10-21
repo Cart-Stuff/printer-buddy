@@ -137,6 +137,18 @@
           const b = el("button", "", `${TAB_ICONS[t.id] || reg[first?.t]?.icon || GRID}<span>${esc(t.name)}</span>`);
           b.type = "button"; b.setAttribute("aria-current", String(t.id === active));
           b.onclick = () => showTab(t.id);
+          if (editing()) {   // Edit layout: drag a tab up / down the side bar to reorder
+            b.draggable = true;
+            b.ondragstart = e => { e.dataTransfer.setData("text/x-pb-tab", t.id); e.dataTransfer.effectAllowed = "move"; };
+            b.ondragover = e => { if ([...e.dataTransfer.types].includes("text/x-pb-tab")) { e.preventDefault(); b.classList.add("bd-tabover"); } };
+            b.ondragleave = () => b.classList.remove("bd-tabover");
+            b.ondrop = e => {
+              e.preventDefault(); b.classList.remove("bd-tabover");
+              const from = layout.tabs.findIndex(x => x.id === e.dataTransfer.getData("text/x-pb-tab")), to = layout.tabs.indexOf(t);
+              if (from < 0 || from === to) return;
+              layout.tabs.splice(to, 0, layout.tabs.splice(from, 1)[0]); changed();
+            };
+          }
           return b;
         }));
         if (editing()) {
@@ -170,12 +182,16 @@
       const bar = el("div", "bd-tabbar", `<span>Editing <b>${esc(tab.name)}</b>: drag ${PB.ic.grip} to move a panel, ${PB.ic.eye} hides it.</span>
         ${phone.matches ? "" : `<span class="bd-seg"><button type="button" data-v="0" aria-pressed="${!preview}">Desktop</button><button type="button" data-v="1" aria-pressed="${preview}">Phone</button></span>`}
         <span class="bd-sp"></span>
-        ${rail ? `<button type="button" data-a="rename">Rename tab</button><button type="button" data-a="del">Delete tab</button>` : ""}
+        ${rail ? `<button type="button" data-a="up" title="Move this tab up the side bar (or drag it there)">↑ Tab</button><button type="button" data-a="down" title="Move this tab down the side bar (or drag it there)">↓ Tab</button>
+          <button type="button" data-a="rename">Rename tab</button><button type="button" data-a="del">Delete tab</button>` : ""}
         <button type="button" data-a="reset">Reset to base layout</button><button type="button" class="bd-primary" data-a="done">Done</button>`);
       for (const b of bar.querySelectorAll("[data-v]")) b.onclick = () => { preview = b.dataset.v === "1"; build(); };
       if (phoneView()) bar.querySelector("span").innerHTML = `Phone order for <b>${esc(tab.name)}</b>: only used on small screens. Drag ${PB.ic.grip} to reorder.`;
       if (rail) {
         bar.querySelector("[data-a=rename]").onclick = () => { const n = prompt("Tab name:", tab.name); if (n) { tab.name = n.slice(0, 30); changed(); } };
+        const i = layout.tabs.indexOf(tab), move = d => { layout.tabs.splice(i + d, 0, layout.tabs.splice(i, 1)[0]); changed(); };
+        bar.querySelector("[data-a=up]").disabled = i === 0; bar.querySelector("[data-a=up]").onclick = () => move(-1);
+        bar.querySelector("[data-a=down]").disabled = i === layout.tabs.length - 1; bar.querySelector("[data-a=down]").onclick = () => move(1);
         const del = bar.querySelector("[data-a=del]");
         del.disabled = layout.tabs.length < 2;
         del.onclick = () => { if (confirm(`Delete the "${tab.name}" tab and its panels?`)) { layout.tabs = layout.tabs.filter(t => t !== tab); changed(); } };
@@ -267,7 +283,7 @@
       const head = el("header", "", `<span class="pb-handle" title="Drag to move" aria-hidden="true">${PB.ic.grip}</span>${def.icon || ""}<button type="button" class="pb-title">${esc(def.title)}</button>
         <span class="pb-tools"><button type="button" data-a="eye" title="${item.h ? "Show this panel" : "Hide this panel"}" aria-pressed="${!item.h}">${item.h ? PB.ic.eyeOff : PB.ic.eye}</button>
         <button type="button" data-a="set" title="Panel settings">${PB.ic.cog}</button><button type="button" data-a="menu" title="More" aria-haspopup="menu">${PB.ic.more}</button></span>
-        ${def.gear && def.settings?.length ? `<button type="button" class="pb-qset" title="${esc(def.title)} settings">${PB.ic.cog}</button>` : ""}
+        ${def.gear && (def.settings?.length || def.edit) ? `<button type="button" class="pb-qset" title="${esc(def.title)} settings">${PB.ic.cog}</button>` : ""}
         <button type="button" class="pb-tog" aria-label="Collapse">${icon('<path d="M6 9l6 6 6-6"/>')}</button>`);
       const body = el("div", "pb-body");
       card.append(head, body);
@@ -285,9 +301,10 @@
       head.querySelector("[data-a=eye]").onclick = () => { item.h = !item.h; changed(); };
       const gear = head.querySelector("[data-a=set]");
       if (def.settings?.length) gear.onclick = () => PB.settings(def, item.o, v => { item.o = v; changed(); });
+      else if (def.edit) gear.onclick = () => def.edit(item.o, v => { item.o = v; changed(); });   // panels with their own setup box
       else gear.remove();
       const qset = head.querySelector(".pb-qset");   // panels with gear: true keep their ⚙ outside Edit layout too
-      if (qset) qset.onclick = () => PB.settings(def, item.o, v => { item.o = v; changed(); });
+      if (qset) qset.onclick = () => def.edit ? def.edit(item.o, v => { item.o = v; changed(); }) : PB.settings(def, item.o, v => { item.o = v; changed(); });
       head.querySelector("[data-a=menu]").onclick = e => menu(e.currentTarget, [
         ["Move up", ops.up], ["Move down", ops.down], ["Move to the left column", ops.left], ["Move to the right column", ops.right],
         ["Remove panel", ops.del, "danger"],

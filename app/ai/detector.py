@@ -128,6 +128,8 @@ LOCATE_GRID = 6          # cells per side; patches are LOCATE_PATCH x LOCATE_PAT
 LOCATE_PATCH = 2
 LOCATE_MIN_DROP = 0.5    # log-odds the best patch must take off the score (90% -> 85%, 99.9% -> 99.8%)
 LOCATE_MAX_AREA = 0.6    # a box over more of the picture than this isn't shown
+BOX_MODES = ("always", "failure", "off")   # off skips locating (its extra model runs) altogether
+DEFAULT_BOX = "failure"
 
 
 def _to_camera(box, flip_h, flip_v, rotation):
@@ -181,7 +183,7 @@ class AI:
         self.error: str | None = None
         self.tasks: dict[int, asyncio.Task] = {}
         self.state: dict[int, dict] = {}
-        self.overlay: set[int] = set()     # printers that always show the failure box
+        self.box: dict[int, str] = {}      # failure box per printer: always / failure / off (BOX_MODES)
 
     # model ----------------------------------------------------------------
     def load(self):
@@ -224,7 +226,7 @@ class AI:
         return {"mode": self.mode_of(pid), "watching": pid in self.tasks,
                 "score": st.get("score"), "top": st.get("top"), "scores": st.get("scores"), "box": st.get("box"),
                 "at": st.get("at"), "streak": st.get("streak", 0), "alerted_at": st.get("alerted_at"),
-                "fast": st.get("streak", 0) > 0 and not st.get("prompted"), "overlay": pid in self.overlay,
+                "fast": st.get("streak", 0) > 0 and not st.get("prompted"), "box_mode": self.box_mode(pid),
                 "alert_item": st.get("alert_item")}   # photo the "was it really a failure?" question is about
 
     def on_change(self, pid: int, prev: dict, v: dict):
@@ -272,10 +274,12 @@ class AI:
         return {"scores": scores, "top": top, "score": score, "box": box, "at": time.time()}
 
     async def _locate(self, pid: int, img: bytes, top: str | None, score: float) -> list[float] | None:
-        """Box around the problem, only for an alert score at or over the threshold, or always
-        (the likeliest place, even for a good print) while the printer's overlay switch is on."""
-        force = pid in self.overlay
-        if not top or (score < float(self.settings()["ai_threshold"]) and not force):
+        """Box around the problem: in "failure" mode only for an alert score at or over the threshold,
+        in "always" mode on every check (the likeliest place, even for a good print), never in "off"
+        mode, which skips the extra model runs."""
+        mode = self.box_mode(pid)
+        force = mode == "always"
+        if not top or mode == "off" or (score < float(self.settings()["ai_threshold"]) and not force):
             return None
         try:
             return await asyncio.to_thread(self.model.locate, img, top, *self.transform(pid), force)
@@ -297,9 +301,15 @@ class AI:
             if self.tasks.get(pid) is asyncio.current_task():
                 self.tasks.pop(pid, None)
 
-    def set_overlay(self, pid: int, on: bool):
-        """Always show the failure box for PID, even when nothing scores as a failure (until restart)."""
-        (self.overlay.add if on else self.overlay.discard)(pid)
+    def box_mode(self, pid: int) -> str:
+        if pid not in self.box:
+            m = (self.store.get(pid) or {}).get("aibox")
+            self.box[pid] = m if m in BOX_MODES else DEFAULT_BOX
+        return self.box[pid]
+
+    def set_box_mode(self, pid: int, mode: str):
+        self.store.update(pid, aibox=mode)
+        self.box[pid] = mode
         self.on_update(pid)
 
     def next_interval(self, pid: int, s: dict) -> float:

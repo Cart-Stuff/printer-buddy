@@ -49,6 +49,11 @@ The installer downloads the newest one for you when you pick **AI detection: bas
   comes from greying out one patch of the picture at a time (a 6 x 6 grid, 25 patches, about 2 seconds on a Pi 4) and seeing where the score
   drops most. It's a rough area, not an outline. When no one part of the picture explains the score (say the
   spaghetti fills the whole view), no box is drawn. Photos kept for the AI are saved without the box.
+- Two box options in the printer page's AI watch panel, remembered per printer:
+    - **Box: always**: a box on every check, the likeliest spot even on a good print (the extra runs every check).
+    - **Box: on failure** (default): a box only at or above the threshold, so the extra runs only happen when a
+      failure is likely.
+    - With both off, the box is skipped completely: no extra runs, which helps older Pis. Alerts still work.
 - The AI judges what the camera sees: point it at **the print on the bed**, not just the nozzle.
 
 ## Help improve the AI (optional, off by default)

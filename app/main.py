@@ -426,8 +426,128 @@ async def ai_overlay(request: Request):
     pid = _pid(request)
     if pid is None:
         return err("not found", 404)
-    manager.ai.set_overlay(pid, bool((await body(request)).get("on")))
-    return JSONResponse({"overlay": pid in manager.ai.overlay})
+    mode = (await body(request)).get("mode")
+        if mode not in ("file", "slicer", "filament"):
+            return err("bad mode")
+        store.save_settings({"eta_mode": mode})
+        mr.ETA_MODE = mode
+    return JSONResponse({"mode": mr.ETA_MODE})
+
+
+async def printer_kv(request: Request):
+    """Small per-printer lists saved on this box (temperature presets, history notes, maintenance, console filters).
+    GET/PUT /api/printers/{pid}/kv?key=presets  body {value: ...}"""
+    pid, key = request.path_params["pid"], request.query_params.get("key", "")
+    if key not in KV_KEYS:
+        return err("unknown key", 404)
+    name = f"kv_{pid}_{key}"
+    if request.method == "PUT":
+        b = await body(request)
+        if "value" not in b or len(json.dumps(b["value"])) > 200_000:
+            return err("bad value")
+        store.save_settings({name: b["value"]})
+    return JSONResponse({"value": store.settings().get(name)})
+
+
+_notices = {"at": 0.0, "items": []}
+
+
+async def notices(request: Request):
+    """Moonraker's own notices from every online printer, for the bell: warnings, failed components and the official
+    Klipper / Moonraker announcements (server.announcements). Cached 10 minutes."""
+    if time.time() - _notices["at"] < 600 and request.query_params.get("refresh") != "1":
+        return JSONResponse({"items": _notices["items"]})
+    names = {p["id"]: p["name"] for p in store.list()}
+
+    async def one(pid, client):
+        out = []
+        if client.connection != "online":
+            return out
+        name = names.get(pid, f"Printer {pid}")
+        try:
+            info = await client.rpc("server.info", timeout=8) or {}
+            for w in info.get("warnings") or []:
+                out.append({"id": f"w-{pid}-{zlib.crc32(str(w).encode())}", "title": f"{name}: Moonraker warning", "body": str(w)[:600], "level": "important"})
+            for c in info.get("failed_components") or []:
+                out.append({"id": f"f-{pid}-{c}", "title": f"{name}: Moonraker part failed to start: {c}",
+                            "body": "Check moonraker.log on that printer.", "level": "important"})
+        except Exception:
+            pass
+        try:
+            res = await client.rpc("server.announcements.list", {"include_dismissed": False}, timeout=8) or {}
+            for a in res.get("entries") or []:
+                if a.get("dismissed"):
+                    continue
+                out.append({"id": f"a-{pid}-{a.get('entry_id')}", "title": f"{name}: {a.get('title') or 'Announcement'}",
+                            "body": str(a.get("description") or "")[:600], "link": a.get("url"),
+                            "level": "important" if a.get("priority") == "high" else "update",
+                            "date": time.strftime("%Y-%m-%d", time.localtime(a["date"])) if a.get("date") else None})
+        except Exception:
+            pass
+        return out
+
+    groups = await asyncio.gather(*(one(pid, c) for pid, c in list(manager.clients.items())))
+    seen, items = set(), []
+    for g in groups:   # the same announcement on several printers: show it once
+        for it in g:
+            key = it["id"].split("-", 2)[0] + it["title"].split(": ", 1)[-1] + (it.get("body") or "")[:80]
+            if it["id"].startswith("a-") and key in seen:
+                continue
+            seen.add(key)
+            items.append(it)
+    _notices.update(at=time.time(), items=items)
+    return JSONResponse({"items": items})
+
+
+_news = {"at": 0.0, "items": []}
+
+
+async def news(request: Request):
+    """Printer Buddy news (the bell): fetched from printerbuddy.stream at most every 6 hours, nothing about this box is sent."""
+    if time.time() - _news["at"] > 6 * 3600 or request.query_params.get("refresh") == "1":
+        domain = os.getenv("PB_SHARE_DOMAIN", "").strip().strip("/") or "printerbuddy.stream"
+        try:
+            status, data = await get_json(f"https://www.{domain}/api/news", timeout=8)
+            if status == 200 and isinstance(data, dict) and isinstance(data.get("items"), list):
+                _news["items"] = [n for n in data["items"] if isinstance(n, dict) and n.get("id") and n.get("title")][:50]
+            _news["at"] = time.time()
+        except Exception:
+            _news["at"] = time.time() - 5.5 * 3600   # offline: try again in ~30 minutes
+    return JSONResponse({"items": _news["items"]})
+
+
+def _git(*args) -> str:
+    import subprocess
+    try:
+        return subprocess.run(["git", "-C", str(Path(__file__).resolve().parent.parent), *args],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return ""
+
+
+VERSION_INFO = {"commit": _git("rev-parse", "--short", "HEAD"), "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+                "date": _git("log", "-1", "--format=%cs")}
+
+
+async def ai_check(request: Request):
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    try:
+        return JSONResponse(await manager.ai.check_now(pid))
+    except RuntimeError as e:
+        return err(str(e), 409)
+
+
+async def ai_overlay(request: Request):
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    mode = (await body(request)).get("mode")
+    if mode not in ai_mod.BOX_MODES:
+        return err("mode must be one of: " + ", ".join(ai_mod.BOX_MODES), 400)
+    manager.ai.set_box_mode(pid, mode)
+    return JSONResponse({"box_mode": manager.ai.box_mode(pid)})
 
 
 async def ai_photos(request: Request):

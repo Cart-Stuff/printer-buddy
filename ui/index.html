@@ -335,6 +335,7 @@
 <link rel="stylesheet" href="/static/panels/machine/sensors/sensors.css">
 <link rel="stylesheet" href="/static/panels/machine/explorer/explorer.css">
 <link rel="stylesheet" href="/static/panels/machine/console/console.css">
+<link rel="stylesheet" href="/static/panels/machine/ksensors/ksensors.css">
 <link rel="stylesheet" href="/static/core/extras/extras.css">
 </head>
 <body>
@@ -1674,6 +1675,7 @@ connectEvents();
 render();
 </script>
 <script src="/static/vendor/echarts.min.js"></script>
+<script src="/static/vendor/echarts-gl.min.js"></script>
 <script src="/static/core/core.js"></script>
 <script src="/static/panels/print/status/status.js"></script>
 <script src="/static/panels/print/files/search.js"></script>
@@ -1713,6 +1715,8 @@ render();
 <script src="/static/panels/machine/system/system.js"></script>
 <script src="/static/panels/machine/config/highlight.js"></script>
 <script src="/static/panels/machine/config/editor.js"></script>
+<script src="/static/panels/machine/config/browse.js"></script>
+<script src="/static/panels/machine/config/actions.js"></script>
 <script src="/static/panels/machine/config/config.js"></script>
 <script src="/static/panels/machine/updates/updates.js"></script>
 <script src="/static/panels/machine/devices/devices.js"></script>
@@ -1721,6 +1725,7 @@ render();
 <script src="/static/panels/machine/console/filters.js"></script>
 <script src="/static/panels/machine/console/help.js"></script>
 <script src="/static/panels/machine/console/console.js"></script>
+<script src="/static/panels/machine/ksensors/ksensors.js"></script>
 <script src="/static/core/home-panels.js"></script>
 <script src="/static/core/builder.js"></script>
 <script src="/static/core/home.js"></script>
@@ -1732,6 +1737,7 @@ render();
 <script src="/static/core/extras/calibration.js"></script>
 <script src="/static/core/extras/pause-layer.js"></script>
 <script src="/static/core/extras/camera-editor.js"></script>
+<script src="/static/core/extras/theme.js"></script>
 <script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});</script>
 </body>
 </html>

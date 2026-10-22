@@ -83,3 +83,20 @@ Each folder has a README.txt saying what's in it.
 `POST /api/scan` · `POST /api/probe {host,port?,api_key?}` · `GET/POST /api/printers` ·
 `PATCH/DELETE /api/printers/{id}` · `GET /api/printers/{id}/snapshot` · `GET /api/events` (SSE) ·
 `POST /api/notify/test`
+
+## Licenses
+
+### Bundled libraries (`ui/vendor/`)
+
+- [Apache ECharts](https://echarts.apache.org) - Apache-2.0, © The Apache Software Foundation
+- [ECharts GL](https://github.com/ecomfe/echarts-gl) - BSD-3-Clause, © 2017 Baidu Inc.
+- [three.js](https://threejs.org) - MIT, © 2010-2022 three.js authors
+
+### Python packages
+
+- [Starlette](https://www.starlette.io) - BSD-3-Clause
+- [Uvicorn](https://www.uvicorn.org) - BSD-3-Clause
+- [python-zeroconf](https://github.com/python-zeroconf/python-zeroconf) - LGPL-2.1
+- [ONNX Runtime](https://github.com/microsoft/onnxruntime) - MIT
+- [NumPy](https://numpy.org) - BSD-3-Clause
+- [Pillow](https://python-pillow.org) - MIT-CMU

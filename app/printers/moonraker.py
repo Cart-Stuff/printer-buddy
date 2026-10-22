@@ -574,7 +574,7 @@ class MoonrakerClient:
             st = self.status.get(n, {})
             if n.startswith("output_pin "):
                 out.append({"id": n, "name": _pretty(n), "kind": "pin", "value": st.get("value"),
-                            "pwm": n.lower() in self.pwm_pins})
+                            "onoff": n.lower() not in self.pwm_pins})
             else:
                 c = (st.get("color_data") or [[0, 0, 0, 0]])[0]
                 out.append({"id": n, "name": _pretty(n), "kind": "led", "color": list(c)})

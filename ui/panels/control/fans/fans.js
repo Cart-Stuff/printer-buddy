@@ -27,16 +27,16 @@ PB.panel("fans", {
     function build(p) {
       const fans = (p.sensors || []).filter(s => s.kind === "fan"), outs = p.outputs || [];
       ctl.innerHTML = fans.map(f => `<label class="pb-speed" data-id="${esc(f.id)}"><span class="pb-lab">${esc(f.name)}</span>
-          ${settable(f) ? `<input type="range" min="0" max="100" step="1">` : `<span class="pb-bar"><i></i></span>`}<output></output></label>`).join("")
-        + outs.map(o => o.kind === "pin" ? (o.pwm ? `<label class="pb-speed" data-id="${esc(o.id)}"><span class="pb-lab">${esc(o.name)}</span>
+          ${settable(f) ? `<input type="range" min="0" max="100" step="1">` : ""}<output${settable(f) ? "" : ' class="pb-auto"'}></output></label>`).join("")
+        + outs.map(o => o.kind === "pin" && o.onoff ? `<label class="pb-speed" data-id="${esc(o.id)}"><span class="pb-lab">${esc(o.name)}</span>
+          <input type="checkbox" class="pb-switch" role="switch"><output></output></label>`
+          : o.kind === "pin" ? `<label class="pb-speed" data-id="${esc(o.id)}"><span class="pb-lab">${esc(o.name)}</span>
           <input type="range" min="0" max="100" step="1"><output></output></label>`
-          // on/off pins (no pwm, or a module's virtual switch): a button, not a slider
-          : `<div class="pb-speed" data-id="${esc(o.id)}"><span class="pb-lab">${esc(o.name)}</span>
-          <button type="button" class="pb-pinbtn" aria-pressed="false">Off</button></div>`)
           : `<label class="pb-speed" data-id="${esc(o.id)}"><span class="pb-lab">${esc(o.name)}</span><input type="color"><output></output></label>`).join("")
         || `<p class="pb-muted">No fans or outputs found.</p>`;
       for (const row of ctl.querySelectorAll("[data-id]")) {
-        const id = row.dataset.id, r = row.querySelector("input[type=range]"), c = row.querySelector("input[type=color]");
+        const id = row.dataset.id, r = row.querySelector("input[type=range]"), c = row.querySelector("input[type=color]"), t = row.querySelector(".pb-switch");
+        if (t) t.onchange = () => gcode(`SET_PIN PIN=${fanName(id)} VALUE=${t.checked ? 1 : 0}`);   // on / off pins
         if (r) {
           r.oninput = () => { busy.add(id); row.querySelector("output").textContent = `${r.value}%`; };
           r.onchange = () => {
@@ -44,8 +44,6 @@ PB.panel("fans", {
             if (id.startsWith("output_pin ")) gcode(`SET_PIN PIN=${fanName(id)} VALUE=${(r.value / 100).toFixed(2)}`); else setFan(id, +r.value);
           };
         }
-        const b = row.querySelector(".pb-pinbtn");
-        if (b) b.onclick = () => gcode(`SET_PIN PIN=${fanName(id)} VALUE=${b.getAttribute("aria-pressed") === "true" ? 0 : 1}`);
         if (c) c.onchange = () => {
           const v = [1, 3, 5].map(i => (parseInt(c.value.slice(i, i + 2), 16) / 255).toFixed(3));
           gcode(`SET_LED LED=${fanName(id)} RED=${v[0]} GREEN=${v[1]} BLUE=${v[2]}`);
@@ -72,21 +70,19 @@ PB.panel("fans", {
       shown: loadPower,
       update(p) {
         const fans = (p.sensors || []).filter(s => s.kind === "fan"), outs = p.outputs || [];
-        const k = fans.map(f => f.id).concat(outs.map(o => `${o.id}:${o.pwm}`)).join("|");
+        const k = fans.map(f => f.id).concat(outs.map(o => `${o.id}:${o.onoff}`)).join("|");
         if (k !== key) { key = k; build(p); }
         effects(p);
         const live = p.connection === "online" && p.klippy_state === "ready";
         for (const f of fans) {
           const row = ctl.querySelector(`[data-id="${CSS.escape(f.id)}"]`); if (!row || busy.has(f.id)) continue;
           const pct = Math.round((f.speed || 0) * 100);
-          row.querySelector("output").textContent = live ? `${pct}%` : "—";
+          row.querySelector("output").textContent = !live ? "—" : settable(f) ? `${pct}%` : pct ? `${pct} %` : "Off";   // automatic fans: text only, like Fluidd
           const r = row.querySelector("input[type=range]"); if (r) { r.value = pct; r.disabled = !live; }
-          const bar = row.querySelector(".pb-bar i"); if (bar) bar.style.width = `${pct}%`;
         }
         for (const o of outs) {
           const row = ctl.querySelector(`[data-id="${CSS.escape(o.id)}"]`); if (!row || busy.has(o.id)) continue;
-          const b = row.querySelector(".pb-pinbtn");
-          if (b) { const on = (o.value || 0) > 0; b.setAttribute("aria-pressed", String(on)); b.textContent = on ? "On" : "Off"; b.disabled = !live; }
+          if (o.kind === "pin" && o.onoff) { const t = row.querySelector(".pb-switch"); t.checked = (o.value || 0) > 0; t.disabled = !live; row.querySelector("output").textContent = t.checked ? "On" : "Off"; }
           else if (o.kind === "pin") { const pct = Math.round((o.value || 0) * 100); row.querySelector("output").textContent = `${pct}%`; const r = row.querySelector("input"); r.value = pct; r.disabled = !live; }
           else { const c = row.querySelector("input"); if (document.activeElement !== c) c.value = "#" + o.color.slice(0, 3).map(x => Math.round((x || 0) * 255).toString(16).padStart(2, "0")).join(""); c.disabled = !live; }
         }

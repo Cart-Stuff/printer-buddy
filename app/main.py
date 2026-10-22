@@ -422,6 +422,14 @@ async def ai_check(request: Request):
         return err(str(e), 409)
 
 
+async def ai_overlay(request: Request):
+    pid = _pid(request)
+    if pid is None:
+        return err("not found", 404)
+    manager.ai.set_overlay(pid, bool((await body(request)).get("on")))
+    return JSONResponse({"overlay": pid in manager.ai.overlay})
+
+
 async def ai_photos(request: Request):
     out = manager.collect.summary()
     for it in out["items"]:
@@ -1111,6 +1119,7 @@ _app = Starlette(routes=[
     Route("/api/ai/reload", ai_reload, methods=["POST"]),
     Route("/api/printers/{pid:int}/ai/check", ai_check, methods=["POST"]),
     Route("/api/printers/{pid:int}/ai/save", ai_save, methods=["POST"]),
+    Route("/api/printers/{pid:int}/ai/overlay", ai_overlay, methods=["POST"]),
     Route("/api/ai/photos", ai_photos),
     Route("/api/ai/photos/{iid}.jpg", ai_photo_image),
     Route("/api/ai/photos/{iid}", ai_photo_label, methods=["POST"]),

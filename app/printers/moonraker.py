@@ -96,6 +96,7 @@ class MoonrakerClient:
         self.webcams: list[dict] = []
         self.extras: list[str] = []          # extra sensors/fans/heaters this printer has
         self.macros: list[dict] = []         # [{"name", "description"}], hidden ones (_NAME) left out
+        self.pwm_pins: set[str] = set()      # output_pin sections with pwm: True (sliders; the rest are on/off)
         self._thumbs: dict[str, tuple[str, bytes] | None] = {}   # filename -> (content type, image)
         self._ids = itertools.count(1)
         self._pending: dict[int, asyncio.Future] = {}
@@ -308,6 +309,8 @@ class MoonrakerClient:
                     if k.startswith("gcode_macro ")}
             params = {k[len("gcode_macro "):]: _macro_params((v or {}).get("gcode") or "") for k, v in settings.items()
                       if k.startswith("gcode_macro ")}
+            # a pin without its own config section (a module's virtual switch) is on/off
+            self.pwm_pins = {k for k, v in settings.items() if k.startswith("output_pin ") and (v or {}).get("pwm")}
         except (RPCError, asyncio.TimeoutError):
             params = {}
         self.macros = sorted(({"name": n.upper(), "description": desc.get(n.lower()) or desc.get(n) or None,
@@ -570,7 +573,8 @@ class MoonrakerClient:
         for n in getattr(self, "outputs", []):
             st = self.status.get(n, {})
             if n.startswith("output_pin "):
-                out.append({"id": n, "name": _pretty(n), "kind": "pin", "value": st.get("value")})
+                out.append({"id": n, "name": _pretty(n), "kind": "pin", "value": st.get("value"),
+                            "pwm": n.lower() in self.pwm_pins})
             else:
                 c = (st.get("color_data") or [[0, 0, 0, 0]])[0]
                 out.append({"id": n, "name": _pretty(n), "kind": "led", "color": list(c)})

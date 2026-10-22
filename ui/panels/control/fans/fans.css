@@ -4,3 +4,7 @@
 .pb-bar i { display: block; height: 100%; width: 0; background: #8f8b99; }
 .pb-fxrow { display: flex; flex-wrap: wrap; gap: 6px; }
 :is(#page, #home).bd .pb-fxrow button[aria-pressed="true"] { color: var(--orange); border-color: var(--orange); }
+/* on/off output pins: name, then a toggle on the right */
+.pb-speed .pb-lab + .pb-pinbtn { margin-left: auto; }
+:is(#page, #home).bd .pb-pinbtn { height: 28px; min-width: 64px; padding: 0 12px; }
+:is(#page, #home).bd .pb-pinbtn[aria-pressed="true"] { color: var(--orange); border-color: var(--orange); background: rgba(255, 138, 31, .14); }

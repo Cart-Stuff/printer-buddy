@@ -6,6 +6,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import secrets
 import time
 import zlib
@@ -13,7 +14,7 @@ from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -91,13 +92,36 @@ self.addEventListener("fetch", () => {});
 """
 
 
+class RevalidatedStatic(StaticFiles):
+    """Static files the browser checks for a newer copy on every load (a cheap 304 when unchanged).
+    Without Cache-Control, browsers guess a freshness time from Last-Modified and can keep using
+    an old script for days after an update."""
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 async def service_worker(request: Request):
     return Response(SW, media_type="text/javascript", headers={"Cache-Control": "no-cache"})
 
 
+_STATIC_REF = re.compile(r'((?:src|href)="/static/)([^"?#]+)"')
+
+
+def _versioned(match: "re.Match") -> str:
+    """/static/x.js -> /static/x.js?v=<mtime>: a changed file gets a new URL, so no cached copy is used."""
+    try:
+        v = int((STATIC / match.group(2)).stat().st_mtime)
+    except OSError:
+        return match.group(0)
+    return f'{match.group(1)}{match.group(2)}?v={v}"'
+
+
 async def index(request: Request):
     # no-cache: the browser always checks for a newer page after an update
-    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
+    html = _STATIC_REF.sub(_versioned, (STATIC / "index.html").read_text(encoding="utf-8"))
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 # ---- discovery -----------------------------------------------------------------
@@ -1139,6 +1163,6 @@ _app = Starlette(routes=[
     Route("/api/notify/settings", get_notify_settings),
     Route("/api/notify/settings", save_notify_settings, methods=["PUT"]),
     Route("/api/notify/test", test_notification, methods=["POST"]),
-    Mount("/static", app=StaticFiles(directory=STATIC), name="static"),
+    Mount("/static", app=RevalidatedStatic(directory=STATIC), name="static"),
 ], lifespan=lifespan)
 app = TunnelGuard(_app)
